@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Admin Panel</title>
+    <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+    <div class="container">
+        <h1>EVERFI Bot Admin Panel</h1>
+
+        <div id="login-section">
+            <h2>Login</h2>
+            <input type="password" id="admin-password" placeholder="Admin Password">
+            <button id="login-button">Login</button>
+            <p id="login-status" class="status"></p>
+        </div>
+
+        <div id="admin-content" style="display: none;">
+            <h2>User Management</h2>
+            <p id="user-status" class="status"></p>
+            <table id="user-table">
+                <thead>
+                    <tr>
+                        <th>Username</th>
+                        <th>Status</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody id="user-list">
+                    </tbody>
+            </table>
+            <button id="refresh-users">Refresh List</button>
+        </div>
+    </div>
+    <script src="admin.js"></script>
+</body>
+</html>
