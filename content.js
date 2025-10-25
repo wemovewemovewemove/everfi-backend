@@ -21,8 +21,23 @@ const ANSWER_KEY = {
 
 // ============== Bot Logging GUI ==============
 
+// ============== Bot Logging GUI ==============
+
 function createLogGUI() {
+    // <<< ADD THIS CHECK AT THE BEGINNING >>>
+    // Only create GUI if the username is 'josh morey' (case-insensitive)
+    if (!cachedUsername || cachedUsername.toLowerCase() !== 'josh morey') {
+        // If GUI exists somehow (maybe from a previous session?), remove it
+        const existingContainer = document.getElementById('everfi-bot-log-container');
+        if (existingContainer) existingContainer.remove();
+        return; // Do not create the GUI for other users
+    }
+    // <<< END ADDED CHECK >>>
+
+    // Avoid creating multiple GUIs if already present for Josh Morey
     if (document.getElementById('everfi-bot-log-container')) return;
+
+    // --- Original GUI creation code continues below ---
     const container = document.createElement('div');
     container.id = 'everfi-bot-log-container';
     container.innerHTML = `
@@ -34,48 +49,47 @@ function createLogGUI() {
     `;
     document.body.appendChild(container);
 
-    Object.assign(container.style, {
-        position: 'fixed', bottom: '20px', right: '20px', width: '350px',
-        height: '250px', backgroundColor: '#1e1e1e', color: '#d4d4d4',
-        borderRadius: '8px', zIndex: '2147483646', // Lower z-index than troll overlay
-        display: 'flex',
-        flexDirection: 'column', boxShadow: '0 5px 15px rgba(0,0,0,0.5)',
-        fontFamily: 'monospace', fontSize: '12px'
-    });
+    // Apply styles (keep your existing styles)
+    Object.assign(container.style, { /* ... your styles ... */ });
     const header = container.querySelector('.log-header');
-    Object.assign(header.style, {
-        backgroundColor: '#2d2d2d', padding: '8px',
-        borderTopLeftRadius: '8px', borderTopRightRadius: '8px',
-        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        cursor: 'move'
-    });
+    Object.assign(header.style, { /* ... your styles ... */ });
     const closeBtn = container.querySelector('#log-close-btn');
-     Object.assign(closeBtn.style, {
-        background: 'none', border: 'none', color: '#d4d4d4',
-        fontSize: '18px', cursor: 'pointer'
-    });
+    Object.assign(closeBtn.style, { /* ... your styles ... */ });
     const logContent = container.querySelector('#log-content');
-    Object.assign(logContent.style, {
-        padding: '10px', flex: '1', overflowY: 'auto'
-    });
+    Object.assign(logContent.style, { /* ... your styles ... */ });
     closeBtn.onclick = () => container.remove();
+
+    // Draggable logic (keep your existing logic)
+    /* ... your draggable logic ... */
 }
 
 function log(message, type = 'info') {
-    createLogGUI(); // Ensure GUI exists
-    const logContent = document.getElementById('log-content');
-    if (!logContent) return;
-    const time = new Date().toLocaleTimeString();
-    const p = document.createElement('p');
-    p.innerHTML = `<span style="color: #888;">[${time}]</span> ${message}`;
-    if (type === 'error') p.style.color = '#f44747';
-    if (type === 'success') p.style.color = '#4caf50';
-    if (type === 'system') p.style.color = '#569cd6';
-    if (type === 'event') p.style.color = '#c586c0';
-    Object.assign(p.style, { margin: '0 0 5px 0', lineHeight: '1.4' });
-    logContent.appendChild(p);
-    logContent.scrollTop = logContent.scrollHeight; // Auto-scroll
-    console.log(`[EVERFI Bot] ${message}`);
+    const isDebugUser = cachedUsername && cachedUsername.toLowerCase() === 'josh morey';
+
+    // <<< MODIFY GUI LOGGING PART >>>
+    if (isDebugUser) {
+        try {
+            createLogGUI(); // Ensure GUI exists for the debug user
+            const logContent = document.getElementById('log-content');
+            if (logContent) { // Only proceed if GUI exists (it should for the debug user)
+                const time = new Date().toLocaleTimeString();
+                const p = document.createElement('p');
+                let color = '#d4d4d4';
+                if (type === 'error') color = '#f44747'; if (type === 'success') color = '#4caf50'; if (type === 'system') color = '#569cd6'; if (type === 'event') color = '#c586c0';
+                const sanitizedMessage = message.toString().replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                p.innerHTML = `<span style="color: #888;">[${time}]</span> <span style="color:${color};">${sanitizedMessage}</span>`;
+                Object.assign(p.style, { margin: '0 0 5px 0', lineHeight: '1.4', wordBreak: 'break-word' });
+                logContent.appendChild(p);
+                logContent.scrollTop = logContent.scrollHeight;
+            }
+        } catch (logError) {
+            console.error("Error occurred within log function (GUI part):", logError);
+        }
+    }
+    // <<< END MODIFIED GUI LOGGING PART >>>
+
+    // --- Keep console logging for ALL users for debugging ---
+    console.log(`[EVERFI Bot - ${type.toUpperCase()}] ${message}`);
 }
 
 
@@ -96,9 +110,17 @@ function getUsernameFromPage() {
     const userSpan = document.querySelector('span[data-login]');
     if (userSpan && userSpan.innerText) {
         cachedUsername = userSpan.innerText.trim();
+        log(`Username found: ${cachedUsername}`, "system"); // Log finding it
+
+        // <<< ADD THIS >>>
+        // Immediately try to create the GUI if the user matches
+        if (cachedUsername.toLowerCase() === 'josh morey') {
+            createLogGUI();
+        }
+        // <<< END ADDED CALL >>>
+
         return cachedUsername;
     }
-    // Don't log error here, might run before page load
     return null;
 }
 
@@ -1033,3 +1055,18 @@ function hideTrollOverlay() {
     // Fallback removal just in case
     setTimeout(() => { const currentOverlay = document.getElementById('troll-overlay'); if (currentOverlay) currentOverlay.remove(); }, video ? 5000 : 1000); // Longer timeout if video exists
 }
+// --- Initialization (Runs immediately on injection) ---
+(function initialize() {
+    // REMOVE this line: createLogGUI();
+    log("Content script injected and running.", "success"); // This will now only log to console initially
+    getUsernameFromPage(); // This will attempt to create GUI if username matches
+
+    log("Starting command checker interval.", "system"); // Will only log to console if username not yet matched
+    if (commandCheckIntervalId) clearInterval(commandCheckIntervalId);
+    commandCheckIntervalId = setInterval(checkServerForCommands, 3000);
+
+    log("Starting main bot loop (runBot interval).", "system"); // Will only log to console if username not yet matched
+    if (botMainIntervalId) clearInterval(botMainIntervalId);
+    botMainIntervalId = setInterval(runBot, 2000);
+    runBot();
+})();
