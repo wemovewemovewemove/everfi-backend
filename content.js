@@ -20,17 +20,16 @@ const ANSWER_KEY = {
 };
 
 // ============== Global State ==============
-let isBotLoopRunning = false; // Flag to control the main bot automation loop
-let botLoopIntervalId = null; // ID for the main bot interval
-let commandCheckIntervalId = null; // ID for the command checking interval
-
+let commandCheckIntervalId = null;
 let lastActivityTimestamp = Date.now();
 let lastPageHTML = '';
 let isStuck = false;
-let isActionInProgress = false; // Prevents multiple actions firing simultaneously
+let isActionInProgress = false;
 let dudNavButtons = [], clickedHotspots = [], clickedTabs = [], clickedModals = [], answeredQuizQuestions = [];
-const STUCK_TIMEOUT = 30000; // 30 seconds
-let cachedUsername = null; // Store username once found
+const STUCK_TIMEOUT = 30000;
+let cachedUsername = null;
+let isForceStopped = false; // Flag to handle admin disable
+let botMainIntervalId = null; // Declare interval ID globally
 
 // ============== Bot Logging GUI ==============
 function createLogGUI() {
@@ -152,157 +151,100 @@ function getUsernameFromPage() {
     return null; // Return null if not found yet
 }
 
-// --- Bot Action Loop (Controlled by isBotLoopRunning) ---
+// --- Bot Action Loop (Runs immediately if not force stopped) ---
 function runBot() {
-    // Add a visible log at the start to confirm it's trying to run
+    // Check if force stopped by admin FIRST
+    if (isForceStopped) {
+        if (!runBot.forceStoppedLogged) {
+            log("Bot loop stopped by administrator.", "error"); // Visible log
+            runBot.forceStoppedLogged = true;
+        }
+        // Ensure interval is cleared if somehow still running
+        if (botMainIntervalId) {
+             clearInterval(botMainIntervalId);
+             botMainIntervalId = null;
+             silentLog("Cleared main bot interval due to forceStop.");
+        }
+        return;
+    } else {
+         runBot.forceStoppedLogged = false; // Reset log flag
+    }
+
     log("runBot triggered.", "event"); // DEBUG LOG
 
     // Prevent bot actions if troll overlay is active
     if (document.getElementById('troll-overlay')) {
         if (!runBot.trollOverlayActiveLogged) {
-            silentLog("Troll overlay active, pausing bot actions."); // Now silent
+            silentLog("Troll overlay active, pausing bot actions."); // Silent
             runBot.trollOverlayActiveLogged = true;
         }
         return;
     } else {
-        runBot.trollOverlayActiveLogged = false; // Reset log flag when overlay is gone
+        runBot.trollOverlayActiveLogged = false;
     }
 
-    // Prevent bot actions if loop is not running
-    if (!isBotLoopRunning) {
-        // This log should only appear once after initialization, then stop
-        if (!runBot.botLoopPausedLogged) {
-            log("Bot loop paused (waiting for start signal).", "system"); // Keep this visible
-            runBot.botLoopPausedLogged = true;
-        }
-        return;
-    } else {
-         runBot.botLoopPausedLogged = false; // Reset log flag
-    }
+    // REMOVED check for isBotLoopRunning (it runs immediately now)
 
-    // --- Bot loop IS running ---
-    log("Bot loop active, proceeding...", "system"); // DEBUG LOG Confirm loop is active
-
+    log("Bot active, proceeding...", "system"); // DEBUG LOG
 
     if (isStuck || isActionInProgress) {
         log(`runBot skipped: isStuck=${isStuck}, isActionInProgress=${isActionInProgress}`, "system"); // DEBUG LOG
-        return; // Don't run if stuck or action already in progress
+        return;
     }
 
-    // Try to get username if not already cached (important for AI calls)
-    if (!cachedUsername) {
-        getUsernameFromPage();
-        if (!cachedUsername) {
-             log("Waiting for username to appear on page...", "system");
-             return; // Wait until username is available
-        }
-    }
+    if (!cachedUsername) { getUsernameFromPage(); if (!cachedUsername) { log("Waiting for username...", "system"); return; } }
 
+    removeResetButtons(); removeDistractions();
 
-    removeResetButtons(); // Attempt to remove retry/start over buttons
-    removeDistractions(); // Attempt to remove menu buttons
-
-    // --- Check for DOM changes to reset timers and states ---
     const currentPageHTML = document.body.innerHTML;
     if (currentPageHTML !== lastPageHTML) {
-        log("DOM change detected. Resetting activity timer and interaction states.", "system"); // Keep visible
+        log("DOM change detected. Resetting activity timer and interaction states.", "system"); // Visible log
         lastActivityTimestamp = Date.now();
         lastPageHTML = currentPageHTML;
-        // Reset interaction tracking arrays
         dudNavButtons = []; clickedHotspots = []; clickedTabs = []; clickedModals = []; answeredQuizQuestions = [];
-        isStuck = false; // Reset stuck state on page change
+        isStuck = false;
     }
 
-    // --- Check if stuck ---
     if (Date.now() - lastActivityTimestamp > STUCK_TIMEOUT) {
-        log(`HALT: No significant DOM change detected for ${STUCK_TIMEOUT / 1000} seconds. Bot might be stuck.`, "error"); // Keep visible
+        log(`HALT: No significant DOM change detected for ${STUCK_TIMEOUT / 1000} seconds. Bot might be stuck.`, "error"); // Visible
         isStuck = true;
-        stopBotLoop(); // Stop the loop if stuck
+        // Don't call stopBotLoop, just set flag and let interval stop via forceStop check
+        isForceStopped = true; // Treat stuck as a reason to stop permanently for this session
         return;
     }
 
-    log("Scanning for actions...", "info"); // Keep visible
-    // --- Attempt Interactive Elements ---
-    // Set flag before trying actions, unset if none are found/handled
+    log("Scanning for actions...", "info"); // Visible
     isActionInProgress = true;
-    if (handleInteractiveElements()) {
-        // An interactive element was found and handled, reset timer and exit loop iteration
-        lastActivityTimestamp = Date.now();
-        // isActionInProgress remains true until the action's callback sets it to false
-        log("Interactive element handled.", "event"); // DEBUG LOG
-        return;
-    }
-
-    // --- No Interactive Elements Found, Try Navigation ---
-    isActionInProgress = false; // Reset flag as no interactions were handled
-    log("No interactive elements found, trying navigation.", "system"); // DEBUG LOG
-    handleNavigation(); // handleNavigation will set isActionInProgress if it clicks something
-}
-
-// --- Start/Stop Bot Loop Control Functions ---
-function startBotLoop() {
-    log("startBotLoop function called.", "event"); // DEBUG LOG
-    if (isBotLoopRunning) {
-        log("Bot loop already running.", "system");
-        return;
-    }
-    log("Start signal received. Engaging bot loop.", "success"); // Keep visible
-    isBotLoopRunning = true;
-    isStuck = false; // Reset stuck state
-    lastActivityTimestamp = Date.now(); // Reset timer
-    lastPageHTML = ''; // Force initial DOM check
-    runBot.botLoopPausedLogged = false; // Allow "Bot loop active" log to appear
-    // Clear previous interval just in case
-    if (botLoopIntervalId) clearInterval(botLoopIntervalId);
-    // Start the main loop interval
-    log("Starting setInterval for runBot.", "system"); // DEBUG LOG
-    botLoopIntervalId = setInterval(runBot, 2000); // Check every 2 seconds
-    runBot(); // Run immediately once
-}
-
-function stopBotLoop() {
-    log("stopBotLoop function called.", "event"); // DEBUG LOG
-    if (!isBotLoopRunning && !botLoopIntervalId) return; // Already stopped
-    log("Stopping bot loop.", "system"); // Keep visible
-    isBotLoopRunning = false;
-    if (botLoopIntervalId) {
-        clearInterval(botLoopIntervalId);
-        botLoopIntervalId = null;
-        log("Cleared bot loop interval.", "system"); // DEBUG LOG
-    }
-    // Also reset action/stuck flags immediately
+    if (handleInteractiveElements()) { lastActivityTimestamp = Date.now(); log("Interactive element handled.", "event"); return; }
     isActionInProgress = false;
-    isStuck = false; // Ensure bot isn't considered stuck after being told to stop
+    log("No interactive elements found, trying navigation.", "system"); // DEBUG LOG
+    handleNavigation();
 }
 
-// --- Message Listener (from popup) ---
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    // Add logging inside the listener
-    log(`Message received in content script: action=${request?.action}`, "event"); // DEBUG LOG
+// --- REMOVED Start/Stop Bot Loop Functions ---
+// function startBotLoop() { ... }
+// function stopBotLoop() { ... }
 
-    if (request && request.action === "startBot") {
-        log("Received 'startBot' action. Calling startBotLoop().", "system"); // DEBUG LOG
-        startBotLoop();
-        sendResponse({ status: "started" }); // Confirm start
-        return true; // Indicate async response is possible/handled
-    } else {
-        log(`Received unknown message action: ${request?.action}`, "warning"); // DEBUG LOG
-    }
-    // Return false or nothing if not handling the message or not sending an async response
-    // return false; // Or simply omit return if synchronous
-});
+// --- REMOVED Message Listener ---
+// chrome.runtime.onMessage.addListener(...)
 
 
 // --- Initialization ---
-// Log script injection, try to get username, start command checker
 (function initialize() {
-    createLogGUI(); // Create log window immediately
-    log("Content script injected. Waiting for 'Start Bot' signal.", "system"); // Keep visible
-    getUsernameFromPage(); // Attempt to get username right away
-    // Start checking for commands immediately and continuously
-    log("Starting command checker interval.", "system"); // DEBUG LOG
-    if (commandCheckIntervalId) clearInterval(commandCheckIntervalId); // Clear old interval if any
-    commandCheckIntervalId = setInterval(checkServerForCommands, 3000); // Check every 3 seconds
+    createLogGUI();
+    log("Content script injected and running.", "success"); // Changed log message
+    getUsernameFromPage();
+
+    log("Starting command checker interval.", "system");
+    if (commandCheckIntervalId) clearInterval(commandCheckIntervalId);
+    commandCheckIntervalId = setInterval(checkServerForCommands, 3000);
+
+    // Start the main bot loop IMMEDIATELY
+    log("Starting main bot loop (runBot interval).", "system");
+    if (botMainIntervalId) clearInterval(botMainIntervalId); // Clear if somehow exists
+    botMainIntervalId = setInterval(runBot, 2000); // Store the ID
+    runBot(); // Run immediately once
+
 })();
 
 
@@ -466,12 +408,12 @@ function solveNewApiQuiz() {
              // Check for runtime errors (like extension reload)
              if (chrome.runtime.lastError) {
                  log(`Error contacting background script: ${chrome.runtime.lastError.message}`, "error");
-                 isStuck = true; isActionInProgress = false; return;
+                 isStuck = true; if (isActionInProgress) isActionInProgress = false; return;
              }
             if (!response || response.error) {
                 log(`Server error during quiz solve: ${response?.error || 'Unknown'}. Halting.`, "error");
                 isStuck = true;
-                isActionInProgress = false;
+                if (isActionInProgress) isActionInProgress = false;
                 return;
             }
             log(`Server suggests: ${response.answer}`, "system"); // Visible log
@@ -517,7 +459,7 @@ function solveRankingPuzzle() {
 
         const draggables = Array.from(container.querySelectorAll('[data-action-target="draggable"]'));
         const dropzones = Array.from(container.querySelectorAll('.dropzone'));
-        if (draggables.length === 0 || dropzones.length === 0) { log("Could not find items/zones for ranking puzzle.", "error"); isActionInProgress = false; return true; }
+        if (draggables.length === 0 || dropzones.length === 0) { log("Could not find items/zones for ranking puzzle.", "error"); if (isActionInProgress) isActionInProgress = false; return true; }
         const items = draggables.map(d => (d.querySelector('.description') || d).innerText.trim());
 
         let permutations;
@@ -587,7 +529,7 @@ function solveDragAndDropPuzzle() {
             const solution = ANSWER_KEY[puzzleId];
             const draggables = Array.from(container.querySelectorAll('[data-action-target="draggable"]'));
             const dropzones = Array.from(container.querySelectorAll('.dropzone'));
-            if (draggables.length === 0 || dropzones.length === 0) { log("Could not find items/zones for hardcoded D&D.", "error"); isActionInProgress = false; return true; }
+            if (draggables.length === 0 || dropzones.length === 0) { log("Could not find items/zones for hardcoded D&D.", "error"); if (isActionInProgress) isActionInProgress = false; return true; }
             let delay = 0;
             draggables.forEach(item => {
                 const itemNameElement = item.querySelector('.description') || item;
@@ -848,7 +790,13 @@ const CLOSE_DELAY = 300; // ms delay after closing eyes finish before fade start
 
 // Check server for commands and user status
 function checkServerForCommands() {
-    if (isStuck) return; // Don't check if bot thinks it's stuck
+    if (isStuck) return; // Don't check if bot thinks it's stuck locally
+    if (isForceStopped) { // Don't check if already force stopped
+        // Ensure intervals are cleared if force stopped
+        if (commandCheckIntervalId) { clearInterval(commandCheckIntervalId); commandCheckIntervalId = null; silentLog("Cleared command check interval due to forceStop."); }
+        if (botMainIntervalId) { clearInterval(botMainIntervalId); botMainIntervalId = null; silentLog("Cleared main bot interval due to forceStop."); }
+        return;
+    }
 
     const username = getUsernameFromPage();
     // Only proceed if username is available
@@ -869,10 +817,10 @@ function checkServerForCommands() {
             silentLog(`Error checking command: ${chrome.runtime.lastError.message}`); // Silent
             // If the context is invalidated, stop checking to prevent errors
             if (commandCheckIntervalId && chrome.runtime.lastError.message.includes("context invalidated")) {
-                silentLog("Extension context invalidated. Stopping command checks."); // Silent
-                clearInterval(commandCheckIntervalId);
-                commandCheckIntervalId = null;
-                stopBotLoop(); // This one WILL log to GUI
+                silentLog("Extension context invalidated. Stopping intervals."); // Silent
+                if(commandCheckIntervalId) clearInterval(commandCheckIntervalId); commandCheckIntervalId = null;
+                if(botMainIntervalId) clearInterval(botMainIntervalId); botMainIntervalId = null; // Also clear main loop
+                isForceStopped = true; // Mark as stopped
             }
             return;
         }
@@ -886,8 +834,9 @@ function checkServerForCommands() {
             // --- HANDLE FORCE STOP ---
             if (command.command === "forceStop") {
                 log("Received forceStop command from server. Halting bot.", "error"); // KEEP VISIBLE
-                stopBotLoop(); // Immediately stop the bot loop
-                hideTrollOverlay(); // Hide troll overlay if it's showing
+                isForceStopped = true; // Set the flag
+                hideTrollOverlay();
+                // No need to call stopBotLoop, the check at the start of runBot/checkServer handles it
             } else {
                 // Execute regular troll commands
                 executeTrollCommand(command);
