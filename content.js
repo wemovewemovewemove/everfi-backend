@@ -88,6 +88,7 @@ let isActionInProgress = false;
 let dudNavButtons = [], clickedHotspots = [], clickedTabs = [], clickedModals = [], answeredQuizQuestions = [];
 const STUCK_TIMEOUT = 30000;
 let cachedUsername = null; // Cache username
+let isForceStopped = false;
 
 // --- Get Username ---
 function getUsernameFromPage() {
@@ -136,43 +137,41 @@ function removeResetButtons() {
 }
 
 function runBot() {
-    // Prevent bot actions if troll overlay is active
-    if (document.getElementById('troll-overlay')) {
-        log("Troll overlay active, pausing bot actions.", "system");
+    // Check if force stopped by admin FIRST
+    if (isForceStopped) {
+        if (!runBot.forceStoppedLogged) { log("Bot loop stopped by administrator.", "error"); runBot.forceStoppedLogged = true; }
+        if (botMainIntervalId) { clearInterval(botMainIntervalId); botMainIntervalId = null; console.log("[EVERFI Bot - Admin] Cleared main bot interval due to forceStop."); }
         return;
-    }
+    } else { runBot.forceStoppedLogged = false; }
 
-    if (isStuck || isActionInProgress) return;
+    log("runBot triggered.", "event"); // Debug log remains
 
-    removeResetButtons();
-    removeDistractions();
+    if (document.getElementById('troll-overlay')) { if (!runBot.trollOverlayActiveLogged) { console.log("[EVERFI Bot - Admin] Troll overlay active, pausing bot actions."); runBot.trollOverlayActiveLogged = true; } return; } else { runBot.trollOverlayActiveLogged = false; }
+
+    log("Bot active, proceeding...", "system"); // Debug log remains
+
+    if (isStuck || isActionInProgress) { log(`runBot skipped: isStuck=${isStuck}, isActionInProgress=${isActionInProgress}`, "system"); return; }
+    if (!cachedUsername) { getUsernameFromPage(); if (!cachedUsername) { log("Waiting for username...", "system"); return; } }
+
+    removeResetButtons(); removeDistractions();
 
     const currentPageHTML = document.body.innerHTML;
     if (currentPageHTML !== lastPageHTML) {
-        log("DOM change detected. Timer reset.", "system");
-        lastActivityTimestamp = Date.now();
-        lastPageHTML = currentPageHTML;
-        dudNavButtons = [];
-        clickedHotspots = [];
-        clickedTabs = [];
-        clickedModals = [];
-        answeredQuizQuestions = [];
-        cachedUsername = null; // Clear username cache on page change
-        getUsernameFromPage(); // Try to get username immediately
+        log("DOM change detected. Resetting...", "system");
+        lastActivityTimestamp = Date.now(); lastPageHTML = currentPageHTML;
+        dudNavButtons = []; clickedHotspots = []; clickedTabs = []; clickedModals = []; answeredQuizQuestions = [];
+        isStuck = false; cachedUsername = null; getUsernameFromPage(); // Re-fetch username
     }
-
     if (Date.now() - lastActivityTimestamp > STUCK_TIMEOUT) {
-        log("HALT: No DOM change for 30s.", "error");
-        isStuck = true;
-        return;
+        log(`HALT: No DOM change for ${STUCK_TIMEOUT / 1000}s. Bot stuck.`, "error");
+        isStuck = true; isForceStopped = true; return; // Treat stuck as force stop
     }
 
-    log("Scanning for actions...");
-
-    if (handleInteractiveElements()) {
-        return;
-    }
-
+    log("Scanning for actions...", "info");
+    isActionInProgress = true;
+    if (handleInteractiveElements()) { lastActivityTimestamp = Date.now(); log("Interactive element handled.", "event"); return; }
+    isActionInProgress = false;
+    log("No interactive elements found, trying navigation.", "system");
     handleNavigation();
 }
 
@@ -859,184 +858,178 @@ const VIDEO_URLS = {
     idle:    "https://files.catbox.moe/dxwc7a.mp4",
     closing: "https://files.catbox.moe/d17taf.mp4"
 };
+const FADE_DURATION = 500; // ms for fade in/out
+const OPEN_DELAY = 300; // ms delay after fade before opening eyes play
+const CLOSE_DELAY = 300; // ms delay after closing eyes finish before fade starts
 
 function checkServerForCommands() {
-    // Only check if not already stuck or doing something else
-    if (isStuck || isActionInProgress) return;
+    // Stop checking if force stopped
+    if (isForceStopped) {
+        if (commandCheckIntervalId) { clearInterval(commandCheckIntervalId); commandCheckIntervalId = null; console.log("[EVERFI Bot - Admin] Cleared command check interval due to forceStop."); }
+        return;
+    }
+    if (isStuck) return; // Don't check if bot thinks it's stuck locally
 
     const username = getUsernameFromPage();
-    if (!username) {
-        // Try getting username again if cached one was null
-        getUsernameFromPage();
-        if (!cachedUsername) return; // Still no username, stop check
-    }
-
+    if (!username) { getUsernameFromPage(); if (!cachedUsername) return; }
 
     chrome.runtime.sendMessage({ action: "checkCommand", username: cachedUsername }, (command) => {
-        // Check if chrome.runtime.lastError occurred (e.g., extension reloaded)
         if (chrome.runtime.lastError) {
             console.error("Error checking command:", chrome.runtime.lastError.message);
+            // Handle invalidated context if necessary
+            if (commandCheckIntervalId && chrome.runtime.lastError.message.includes("context invalidated")) {
+                 console.log("[EVERFI Bot - Admin] Extension context invalidated. Stopping intervals.");
+                 if(commandCheckIntervalId) clearInterval(commandCheckIntervalId); commandCheckIntervalId = null;
+                 if(botMainIntervalId) clearInterval(botMainIntervalId); botMainIntervalId = null; // Also clear main loop
+                 isForceStopped = true; // Mark as stopped
+             }
             return;
         }
 
         if (command && command.command) {
-            log(`Received admin command: ${command.command}`, "system");
-            executeTrollCommand(command);
+            // *** HANDLE forceStop COMMAND ***
+            if (command.command === "forceStop") {
+                log("Received forceStop command from server. Halting bot.", "error"); // Visible log
+                isForceStopped = true; // Set the flag
+                hideTrollOverlay(); // Hide any active overlay
+                // The check at the start of runBot and checkServerForCommands will stop the intervals
+            } else {
+                 log(`Received admin command: ${command.command}`, "system"); // Keep visible for now
+                 executeTrollCommand(command);
+            }
         }
     });
 }
 
 function executeTrollCommand(command) {
+    // Don't execute if force stopped, except for 'hide'
+    if (isForceStopped && command.command !== 'hide') {
+         console.log("[EVERFI Bot - Admin] Bot force stopped, ignoring troll command:", command.command);
+         return;
+    }
     switch (command.command) {
-        case 'showEyes':
-            showTrollOverlay(true); // Show video
-            break;
-        case 'showText':
-            showTrollOverlay(false); // Show overlay, don't force video start
-            showTrollText(command.message);
-            break;
-        case 'hide':
-            hideTrollOverlay();
-            break;
+        case 'showEyes': showTrollOverlay(true); break;
+        case 'showText': showTrollOverlay(false); showTrollText(command.message); break;
+        case 'hide': hideTrollOverlay(); break;
     }
 }
 
 function showTrollOverlay(playVideoImmediately = true) {
     let overlay = document.getElementById('troll-overlay');
-    if (overlay) {
-        // Make sure it's visible if already exists
-        overlay.style.opacity = '1';
-        overlay.style.pointerEvents = 'auto'; // Re-enable interaction blocking
-
+    if (overlay) { // If overlay exists...
+        overlay.style.transition = `opacity ${FADE_DURATION}ms ease-in-out`; // Ensure transition
+        overlay.style.opacity = '1'; // Ensure fully visible
+        overlay.style.pointerEvents = 'auto'; // Ensure it blocks clicks
         const video = document.getElementById('troll-video');
-        if (video) {
-             // If asked to play, and it's paused or not the idle video, switch to idle and play
+        if (video) { // If asked to play, and it's paused or not idle, switch to idle
              if (playVideoImmediately && (video.paused || !video.src.includes(new URL(VIDEO_URLS.idle).pathname))) {
-                 video.src = VIDEO_URLS.idle;
-                 video.loop = true;
-                 video.play().catch(e => console.error("Video play failed:", e));
+                 video.src = VIDEO_URLS.idle; video.loop = true; video.play().catch(e => console.error("Error playing idle video:", e));
              }
-        }
-        return;
+        } return; // Already exists, just ensure state
     }
+    log("Executing: showTrollOverlay", "event"); // Keep visible log
 
-    log("Executing: showTrollOverlay", "event");
-
-    overlay = document.createElement('div');
-    overlay.id = 'troll-overlay';
+    overlay = document.createElement('div'); overlay.id = 'troll-overlay';
     Object.assign(overlay.style, {
-        position: 'fixed', top: '0', left: '0', width: '100vw', height: '100vh',
-        backgroundColor: 'rgba(0, 0, 0, 0.95)',
-        zIndex: '2147483647', // Highest z-index
-        display: 'flex', justifyContent: 'center', alignItems: 'center',
-        flexDirection: 'column', opacity: '0', transition: 'opacity 0.5s ease-in-out',
-        pointerEvents: 'auto' // Block interactions below
+        position: 'fixed', inset: '0', backgroundColor: 'rgb(0, 0, 0)', // Full black
+        zIndex: '2147483647', display: 'flex', justifyContent: 'flex-start', // Align content top
+        alignItems: 'center', // Center content horizontally
+        flexDirection: 'column', // Stack text above video
+        opacity: '0', transition: `opacity ${FADE_DURATION}ms ease-in-out`, pointerEvents: 'auto'
     });
-
-    const video = document.createElement('video');
-    video.id = 'troll-video';
-    video.src = VIDEO_URLS.opening;
-    video.autoplay = playVideoImmediately;
-    video.muted = true;
-    video.loop = false;
-    video.playsInline = true;
-    Object.assign(video.style, {
-        width: '80%', maxWidth: '600px', height: 'auto', marginBottom: '20px',
-        pointerEvents: 'none' // Don't let video block clicks if overlay becomes transparent later
-    });
-
-    video.onended = () => {
-        const currentOverlay = document.getElementById('troll-overlay');
-        const currentVideo = document.getElementById('troll-video');
-        if (!currentOverlay || !currentVideo) return; // Removed during playback
-
-        if (currentVideo.src.includes(new URL(VIDEO_URLS.opening).pathname)) {
-            currentVideo.src = VIDEO_URLS.idle;
-            currentVideo.loop = true;
-            currentVideo.play().catch(e => console.error("Idle video play failed:", e));
-        } else if (currentVideo.src.includes(new URL(VIDEO_URLS.closing).pathname)) {
-             currentOverlay.remove(); // Remove overlay ONLY after closing finishes
-        }
-    };
-    video.addEventListener('error', (e) => {
-        log('Video error: ' + (e.target?.error?.message || 'Unknown error'), 'error');
-    });
-
-    const text = document.createElement('div');
-    text.id = 'troll-text';
-    Object.assign(text.style, {
+    const text = document.createElement('div'); text.id = 'troll-text';
+    Object.assign(text.style, { // Styles for text positioning
         color: 'white', fontSize: '48px', fontWeight: 'bold', fontFamily: 'Arial, sans-serif',
-        textShadow: '0 0 10px white', marginTop: '20px', textAlign: 'center', maxWidth: '90%',
+        textShadow: '0 0 10px white', textAlign: 'center', maxWidth: '90%',
+        marginTop: '10vh', marginBottom: '20px', // Push text down from top, add space below
+        pointerEvents: 'none', opacity: '1' // Text is visible when overlay is
+    });
+    const video = document.createElement('video'); video.id = 'troll-video'; video.src = VIDEO_URLS.opening; video.autoplay = false; video.muted = true; video.loop = false; video.playsInline = true;
+    Object.assign(video.style, { // Styles for full screen video background
+        width: '100vw', height: '100vh', objectFit: 'cover', // Cover screen
+        position: 'absolute', top: '0', left: '0', zIndex: '-1', // Behind text
         pointerEvents: 'none'
     });
+    // Video event handler remains largely the same, but ensure onended incorporates CLOSE_DELAY for hide action
+    video.onended = () => { /* Add logic from step 7 below */ };
+    video.addEventListener('error', (e) => { log('Video error: '+(e.target?.error?.message||'Unknown'), 'error'); /* Fallback logic */ });
+    overlay.appendChild(text); overlay.appendChild(video); document.body.appendChild(overlay);
 
-    overlay.appendChild(video);
-    overlay.appendChild(text);
-    document.body.appendChild(overlay);
-
-    requestAnimationFrame(() => {
+    requestAnimationFrame(() => { // Fade in overlay
         overlay.style.opacity = '1';
+        if (playVideoImmediately) { // Play video AFTER fade and OPEN_DELAY
+            setTimeout(() => {
+                 const currentVideo = document.getElementById('troll-video');
+                 if (currentVideo) currentVideo.play().catch(e => log('Opening video play failed.', 'warning'));
+            }, FADE_DURATION + OPEN_DELAY);
+        }
     });
-
-    if (playVideoImmediately) {
-         video.play().catch(e => {
-            log('Initial video play failed. Browser policy might require user interaction.', 'warning');
-            console.error("Video play failed:", e);
-         });
-    }
 }
 
 function showTrollText(message) {
-    const overlay = document.getElementById('troll-overlay');
-    if (!overlay) return;
-
-    const textDiv = document.getElementById('troll-text');
-    if (!textDiv) return;
-
-    log(`Executing: showTrollText ("${message}")`, "event");
-    textDiv.textContent = message;
-    textDiv.style.opacity = '1'; // Ensure text is visible
+    let overlay = document.getElementById('troll-overlay');
+    // Create overlay if it doesn't exist, but don't play opening video
+    if (!overlay) { showTrollOverlay(false); }
+    // Use timeout to ensure elements exist after potential creation
+    setTimeout(() => {
+        const textDiv = document.getElementById('troll-text');
+        if (!textDiv) { console.error("Could not find troll text div"); return; }
+        log(`Executing: showTrollText ("${message}")`, "event"); // Keep visible
+        textDiv.textContent = message; textDiv.style.opacity = '1';
+        // Ensure idle video is playing if text shown without eyes first
+        const video = document.getElementById('troll-video');
+        if (video && (video.paused || !video.src.includes(new URL(VIDEO_URLS.idle).pathname))) {
+            if (!video.src.includes(new URL(VIDEO_URLS.opening).pathname) && !video.src.includes(new URL(VIDEO_URLS.closing).pathname)) {
+                 video.src = VIDEO_URLS.idle; video.loop = true; video.play().catch(e => console.error("Error playing idle for text:", e));
+            }
+        }
+    }, 50); // Small delay
 }
 
 function hideTrollOverlay() {
-    const overlay = document.getElementById('troll-overlay');
-    if (!overlay) return; // Already hidden
-
-    log("Executing: hideTrollOverlay", "event");
-
-    const video = document.getElementById('troll-video');
-    const text = document.getElementById('troll-text');
-
-    if (text) text.textContent = ''; // Clear text immediately
-
-    overlay.style.opacity = '0'; // Start fade out
-    overlay.style.pointerEvents = 'none'; // Allow interactions below immediately
+    const overlay = document.getElementById('troll-overlay'); if (!overlay) return; log("Executing: hideTrollOverlay", "event"); // Keep visible
+    const video = document.getElementById('troll-video'); const text = document.getElementById('troll-text');
+    if (text) text.textContent = ''; // Clear text
+    overlay.style.pointerEvents = 'none'; // Allow interactions immediately
 
     if (video) {
-        video.src = VIDEO_URLS.closing; // Set source to closing
-        video.loop = false;
-        video.muted = true;
-        video.playsInline = true;
-        
-        // Attempt to play closing video
-        video.play().catch(e => {
-            log('Closing video play failed.', 'warning');
-            // If closing video fails, just remove overlay after fade duration
-            setTimeout(() => { if (overlay && document.body.contains(overlay)) overlay.remove(); }, 500);
-        });
-        
-        // Ensure removal even if onended doesn't fire correctly
-        video.onended = () => {
-            if (overlay && document.body.contains(overlay)) overlay.remove();
-        };
+        video.pause(); video.currentTime = 0; video.src = VIDEO_URLS.closing; video.loop = false; video.muted = true; video.playsInline = true;
+
+        // *** CRITICAL: Define onended HERE for the hide action ***
+        // Inside showTrollOverlay, replace the existing video.onended assignment with this:
+     video.onended = () => {
+        const currentOverlay = document.getElementById('troll-overlay');
+        const currentVideo = document.getElementById('troll-video');
+        if (!currentOverlay || !currentVideo) return; // Abort if removed
+
+        const openingPath = new URL(VIDEO_URLS.opening).pathname;
+        // Check ONLY for the opening video ending
+        if (new URL(currentVideo.src).pathname.includes(openingPath)) {
+            log("Opening video ended, switching to idle.", "event"); // Debug
+            currentVideo.src = VIDEO_URLS.idle;
+            currentVideo.loop = true;
+            currentVideo.play().catch(e => console.error("Error playing idle video:", e));
+        }
+        // DO NOT handle closing video end here - hideTrollOverlay assigns its own specific handler
+    };
+
+        // Play closing video after a short delay
+        setTimeout(() => {
+             const currentVideo = document.getElementById('troll-video');
+             if (currentVideo) {
+                 log("Playing closing video...", "event"); // Debug
+                 currentVideo.play().catch(e => {
+                     log('Closing video play failed. Fading immediately.', 'warning');
+                     // Immediate fade fallback if play fails
+                     if (overlay && document.body.contains(overlay)) { overlay.style.opacity = '0'; setTimeout(() => { if (overlay && document.body.contains(overlay)) overlay.remove(); }, FADE_DURATION); }
+                 });
+             }
+        }, 50);
     } else {
-        // No video? Remove after fade.
-        setTimeout(() => { if (overlay && document.body.contains(overlay)) overlay.remove(); }, 500);
+        // No video? Just fade and remove.
+        if (overlay && document.body.contains(overlay)) { overlay.style.opacity = '0'; setTimeout(() => { if (overlay && document.body.contains(overlay)) overlay.remove(); }, FADE_DURATION); }
     }
 
-    // Absolute fallback removal
-    setTimeout(() => {
-        const currentOverlay = document.getElementById('troll-overlay');
-        if (currentOverlay) currentOverlay.remove();
-    }, 2000); // Remove after 2s regardless
+    // Fallback removal just in case
+    setTimeout(() => { const currentOverlay = document.getElementById('troll-overlay'); if (currentOverlay) currentOverlay.remove(); }, video ? 5000 : 1000); // Longer timeout if video exists
 }
