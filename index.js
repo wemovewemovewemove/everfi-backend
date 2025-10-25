@@ -6,10 +6,13 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// --- Add this line right below ---
+app.use(express.static(__dirname)); // Serve static files (like admin.html) from the current directory
+
 // --- Read Environment Variables ---
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const WHITELIST_STRING = process.env.WHITELIST || "";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD; // New admin password
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD; // Admin password
 
 const allowedUsers = WHITELIST_STRING.split(',')
     .map(name => name.trim().toLowerCase())
@@ -68,7 +71,6 @@ app.post('/api/validate', async (req, res) => {
         reason = 'No username provided';
         isAllowed = false;
         console.log("Validation attempt with no username.");
-        // Log attempt (error handling inside)
         await logValidationAttempt(cleanedUsername, timestamp, isAllowed, reason);
         return res.status(400).json({ isValid: false, error: "Username required" });
     }
@@ -94,7 +96,7 @@ app.post('/api/validate', async (req, res) => {
         if (!userDoc.exists) {
             // First time seeing this user, create their record with isEnabled: true
             console.log(`User "${cleanedUsername}" not found in DB, creating with isEnabled: true.`);
-            await userDocRef.set({ isEnabled: true, username: cleanedUsername }); // Store username for easier querying
+            await userDocRef.set({ isEnabled: true, username: cleanedUsername });
             isAllowed = true;
             reason = 'Access Granted (New User)';
             console.log("Access GRANTED - New user created.");
@@ -106,7 +108,6 @@ app.post('/api/validate', async (req, res) => {
                 reason = 'Disabled by admin';
                 console.log("Access DENIED - User disabled by admin.");
             } else {
-                // isEnabled is true or missing (treat missing as true for safety)
                 isAllowed = true;
                 reason = 'Access Granted';
                 console.log("Access GRANTED - User enabled.");
@@ -154,14 +155,14 @@ async function logValidationAttempt(username, timestamp, allowed, reason) {
 
 // --- ADMIN ENDPOINTS ---
 
-// Simple password check middleware (replace with proper auth later if needed)
+// Simple password check middleware
 function checkAdminPassword(req, res, next) {
-    const providedPassword = req.headers['admin-password']; // Expect password in headers
+    const providedPassword = req.headers['admin-password'];
     if (!ADMIN_PASSWORD || providedPassword !== ADMIN_PASSWORD) {
         console.warn("Admin access denied: Invalid or missing password.");
         return res.status(401).json({ error: 'Unauthorized' });
     }
-    next(); // Password is correct, proceed
+    next();
 }
 
 // Admin Login
@@ -181,8 +182,8 @@ app.get('/api/admin/users', checkAdminPassword, async (req, res) => {
     try {
         const usersSnapshot = await db.collection('users').orderBy('username').get();
         const usersList = usersSnapshot.docs.map(doc => ({
-            username: doc.id, // doc.id is the username
-            isEnabled: doc.data().isEnabled ?? true // Default to true if missing
+            username: doc.id,
+            isEnabled: doc.data().isEnabled ?? true
         }));
         res.status(200).json(usersList);
     } catch (error) {
@@ -201,7 +202,7 @@ app.post('/api/admin/toggle-user', checkAdminPassword, async (req, res) => {
 
     try {
         const userDocRef = db.collection('users').doc(username.toLowerCase());
-        await userDocRef.set({ isEnabled: isEnabled }, { merge: true }); // Use set with merge to create if not exists
+        await userDocRef.set({ isEnabled: isEnabled }, { merge: true });
         console.log(`Admin toggled user "${username}" to isEnabled: ${isEnabled}`);
         res.status(200).json({ success: true });
     } catch (error) {
@@ -213,11 +214,7 @@ app.post('/api/admin/toggle-user', checkAdminPassword, async (req, res) => {
 // --- AI Proxy Endpoints (Unchanged, but now check isEnabled via /api/validate first) ---
 app.post('/api/solve-quiz', async (req, res) => {
     const { username, question, options, tableData, incorrectOptions } = req.body;
-    // We rely on the frontend calling /api/validate first.
-    // A more robust system might re-validate here or use tokens.
-    // For simplicity now, we assume if they call this, they were validated moments ago.
-    
-    // Check if user exists and is enabled (quick check, relies on /validate creating the user)
+     // Quick check if user exists and is enabled
      if (db) {
          try {
              const userDoc = await db.collection('users').doc(username.trim().toLowerCase()).get();
@@ -239,7 +236,7 @@ app.post('/api/solve-quiz', async (req, res) => {
     let promptEnd = (incorrectOptions && incorrectOptions.length > 0) ? `\n\nIMPORTANT: ... Do NOT choose any of these WRONG answers: ${incorrectOptions.join(', ')}` : "";
     const fullPrompt = promptStart + promptMain + promptEnd;
     try {
-        const response = await fetch("https://api.openai.com/v1/chat/completions", { /* ... OpenAI call ... */ 
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
             method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${OPENAI_API_KEY}`},
             body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: fullPrompt }] })
         });
@@ -273,7 +270,7 @@ app.post('/api/solve-dnd', async (req, res) => {
     else { prompt += `\nDetermine the correct zone...\n`; }
     prompt += `\nYour response MUST be ONLY a valid JSON array...\nExample response format:\n[\n  {"item": "Item A", "zoneIndex": 1}...\n]\n`;
     try {
-        const response = await fetch("https://api.openai.com/v1/chat/completions", { /* ... OpenAI call ... */ 
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
             method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${OPENAI_API_KEY}`},
             body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: prompt }] })
         });
