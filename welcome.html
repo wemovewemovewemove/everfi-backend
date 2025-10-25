@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Welcome to the EVERFI Automator!</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --background: #1a1a1d;
+            --surface: #2c2c31;
+            --primary: #6f22f2;
+            --text-primary: #f5f5f7;
+            --text-secondary: #a1a1a6;
+            --border-color: #444;
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--background);
+            color: var(--text-primary);
+            padding: 40px;
+            max-width: 700px;
+            margin: 40px auto;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            text-align: center;
+        }
+        h1 {
+            color: var(--primary);
+            font-size: 2.5em;
+            font-weight: 700;
+            margin-bottom: 0;
+        }
+        h2 {
+            font-size: 1.5em;
+            margin-top: 0.25em;
+            font-weight: 400;
+            color: var(--text-secondary);
+        }
+        p, ol {
+            text-align: left;
+            line-height: 1.7;
+        }
+        ol {
+            padding-left: 20px;
+        }
+        li {
+            margin-bottom: 10px;
+        }
+        hr {
+            border: none;
+            border-top: 1px solid var(--border-color);
+            margin: 40px 0;
+        }
+        .note-box {
+            background-color: var(--surface);
+            border-left: 4px solid var(--primary);
+            padding: 20px;
+            border-radius: 6px;
+            text-align: left;
+        }
+        .note-box p {
+            margin: 0;
+        }
+        .note-box .signature {
+            margin-top: 20px;
+            color: var(--text-secondary);
+        }
+    </style>
+</head>
+<body>
+    <h1>Welcome to the EVERFI Automator</h1>
+    <h2>Your course is now on autopilot.</h2>
+
+    <p>
+        Thank you for installing the bot. To get started, you'll need to add your OpenAI API key.
+    </p>
+    
+    <ol>
+        <li>Click the extension icon in your browser's toolbar.</li>
+        <li>Paste your API key into the input field and click "Test Key" to verify it.</li>
+        <li>Navigate to an EVERFI course page and click "Start Bot".</li>
+    </ol>
+    
+    <p>
+        The bot will now take over. You can monitor its progress in the on-screen log.
+    </p>
+    
+    <hr>
+
+    <div class="note-box">
+        <p>
+            <strong>A quick note from the developer:</strong> The bot is not perfect and will sometimes get stuck. This usually happens on complex sorting activities or if EVERFI introduces new button layouts.
+        </p>
+        <br>
+        <p>
+            If you notice the bot is stuck, the quickest solution is to reload the page and complete that single activity manually. The bot will be able to take over again on the next page. The automation is highly optimized for quizzes, which should save you significant time.
+        </p>
+        <p class="signature">
+            Cheers,<br>
+            MJ
+        </p>
+    </div>
+</body>
+</html>

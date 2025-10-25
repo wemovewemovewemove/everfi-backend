@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "EVERFI Automator",
+  "version": "0.6",
+  "description": "Clicks through EVERFI courses automatically.",
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png"
+  },
+  "permissions": [
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "*://*.everfi.net/*",
+    "http://ip-api.com/",
+    "https://everfi-backend.onrender.com/"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "EVERFI Bot Control",
+    "default_popup": "popup.html"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [ "IAmMusic-Regular.ttf-_4_.ttf" ],
+      "matches": [ "<all_urls>" ]
+    }
+  ]
+}
