@@ -17,20 +17,42 @@
         </div>
 
         <div id="admin-content" style="display: none;">
-            <h2>User Management</h2>
-            <p id="user-status" class="status"></p>
-            <table id="user-table">
-                <thead>
-                    <tr>
-                        <th>Username</th>
-                        <th>Status</th>
-                        <th>Action</th>
-                    </tr>
-                </thead>
-                <tbody id="user-list">
-                    </tbody>
-            </table>
-            <button id="refresh-users">Refresh List</button>
+            
+            <div class="panel">
+                <h2>Troll Panel</h2>
+                <div class="control-group">
+                    <label for="troll-user-select">Select User:</label>
+                    <select id="troll-user-select"></select>
+                </div>
+                <div class="control-group">
+                    <label for="troll-message">Message (for typing):</label>
+                    <input type="text" id="troll-message" placeholder="I see you...">
+                    <button id="send-text-btn">Send Text</button>
+                </div>
+                <div class="control-group">
+                    <button id="show-eyes-btn">Show Eyes</button>
+                    <button id="hide-all-btn" class="disable">Hide All</button>
+                </div>
+                <p id="troll-status" class="status"></p>
+            </div>
+
+            <div class="panel">
+                <h2>User Management</h2>
+                <p id="user-status" class="status"></p>
+                <table id="user-table">
+                    <thead>
+                        <tr>
+                            <th>Username</th>
+                            <th>Status</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="user-list">
+                        </tbody>
+                </table>
+                <button id="refresh-users">Refresh List</button>
+            </div>
+
         </div>
     </div>
     <script src="admin.js"></script>

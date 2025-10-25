@@ -5,40 +5,29 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
-
-// --- Add this line right below ---
-app.use(express.static(__dirname)); // Serve static files (like admin.html) from the current directory
+app.use(express.static(__dirname)); // Serve static files (admin.html, etc.)
 
 // --- Read Environment Variables ---
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const WHITELIST_STRING = process.env.WHITELIST || "";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD; // Admin password
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
 const allowedUsers = WHITELIST_STRING.split(',')
     .map(name => name.trim().toLowerCase())
     .filter(name => name.length > 0);
 
-if (!OPENAI_API_KEY) {
-    console.error("FATAL ERROR: OPENAI_API_KEY environment variable is not set.");
-}
-if (!ADMIN_PASSWORD) {
-    console.warn("WARNING: ADMIN_PASSWORD environment variable is not set. Admin panel will be insecure.");
-}
+if (!OPENAI_API_KEY) console.error("FATAL ERROR: OPENAI_API_KEY is not set.");
+if (!ADMIN_PASSWORD) console.warn("WARNING: ADMIN_PASSWORD is not set.");
 console.log("Server started. Allowed users:", allowedUsers);
 
 // --- Initialize Firebase Admin SDK ---
 let db;
 try {
     const serviceAccountString = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-    if (!serviceAccountString) {
-        throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON environment variable not set.');
-    }
+    if (!serviceAccountString) throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON not set.');
     const serviceAccount = JSON.parse(serviceAccountString);
-
-    admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount)
-    });
-    db = admin.firestore(); // Assign db here
+    admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+    db = admin.firestore();
     console.log("Firebase Admin SDK initialized successfully.");
 } catch (error) {
     console.error("Firebase Admin SDK initialization failed:", error);
@@ -51,87 +40,6 @@ app.get('/', (req, res) => {
   res.send('Your backend server is running!');
 });
 
-// --- VALIDATE USERNAME ENDPOINT (Checks whitelist AND isEnabled status) ---
-app.post('/api/validate', async (req, res) => {
-    const { username } = req.body;
-    const timestamp = new Date();
-    let isAllowed = false;
-    let reason = 'Unknown';
-    let cleanedUsername = 'unknown';
-    let userDocRef;
-    let userDoc;
-
-    if (!db) {
-         console.error("Firestore not available for validation.");
-         return res.status(500).json({ isValid: false, error: "Database connection error" });
-    }
-
-    if (!username) {
-        cleanedUsername = 'unknown';
-        reason = 'No username provided';
-        isAllowed = false;
-        console.log("Validation attempt with no username.");
-        await logValidationAttempt(cleanedUsername, timestamp, isAllowed, reason);
-        return res.status(400).json({ isValid: false, error: "Username required" });
-    }
-
-    cleanedUsername = username.trim().toLowerCase();
-    userDocRef = db.collection('users').doc(cleanedUsername); // Use username as document ID
-
-    console.log(`Validation attempt for user: "${cleanedUsername}" at ${timestamp.toISOString()}`);
-
-    // 1. Check Whitelist first
-    if (!allowedUsers.includes(cleanedUsername)) {
-        isAllowed = false;
-        reason = 'Not on whitelist';
-        console.log("Access DENIED - Not whitelisted.");
-        await logValidationAttempt(cleanedUsername, timestamp, isAllowed, reason);
-        return res.status(403).json({ isValid: false });
-    }
-
-    // 2. User is whitelisted, check their status in the 'users' collection
-    try {
-        userDoc = await userDocRef.get();
-
-        if (!userDoc.exists) {
-            // First time seeing this user, create their record with isEnabled: true
-            console.log(`User "${cleanedUsername}" not found in DB, creating with isEnabled: true.`);
-            await userDocRef.set({ isEnabled: true, username: cleanedUsername });
-            isAllowed = true;
-            reason = 'Access Granted (New User)';
-            console.log("Access GRANTED - New user created.");
-        } else {
-            // User exists, check their isEnabled status
-            const userData = userDoc.data();
-            if (userData.isEnabled === false) { // Explicitly check for false
-                isAllowed = false;
-                reason = 'Disabled by admin';
-                console.log("Access DENIED - User disabled by admin.");
-            } else {
-                isAllowed = true;
-                reason = 'Access Granted';
-                console.log("Access GRANTED - User enabled.");
-            }
-        }
-    } catch (dbError) {
-        console.error("Firestore error checking user status:", dbError);
-        isAllowed = false; // Fail safe: deny access if DB check fails
-        reason = 'Database error during status check';
-        await logValidationAttempt(cleanedUsername, timestamp, isAllowed, reason);
-        return res.status(500).json({ isValid: false, error: "Database error" });
-    }
-
-    // 3. Log the final attempt result
-    await logValidationAttempt(cleanedUsername, timestamp, isAllowed, reason);
-
-    // 4. Send response
-    if (isAllowed) {
-        res.status(200).json({ isValid: true });
-    } else {
-        res.status(403).json({ isValid: false });
-    }
-});
-
 // --- Helper Function to Log Validation Attempts ---
 async function logValidationAttempt(username, timestamp, allowed, reason) {
     if (!db) {
@@ -139,12 +47,7 @@ async function logValidationAttempt(username, timestamp, allowed, reason) {
         return;
     }
     try {
-        const logEntry = {
-            username: username,
-            timestamp: timestamp,
-            allowed: allowed,
-            reason: reason
-        };
+        const logEntry = { username, timestamp, allowed, reason };
         const docRef = await db.collection('validationLogs').add(logEntry);
         console.log(`Logged validation attempt [${reason}] with ID: ${docRef.id}`);
     } catch (logError) {
@@ -152,10 +55,7 @@ async function logValidationAttempt(username, timestamp, allowed, reason) {
     }
 }
 
-
-// --- ADMIN ENDPOINTS ---
-
-// Simple password check middleware
+// --- Password check middleware ---
 function checkAdminPassword(req, res, next) {
     const providedPassword = req.headers['admin-password'];
     if (!ADMIN_PASSWORD || providedPassword !== ADMIN_PASSWORD) {
@@ -165,18 +65,156 @@ function checkAdminPassword(req, res, next) {
     next();
 }
 
-// Admin Login
+// ===================================
+// USER-FACING ENDPOINTS
+// ===================================
+
+// --- VALIDATE USERNAME ENDPOINT ---
+app.post('/api/validate', async (req, res) => {
+    const { username } = req.body;
+    const timestamp = new Date();
+    let isAllowed = false, reason = 'Unknown', cleanedUsername = 'unknown';
+
+    if (!db) return res.status(500).json({ isValid: false, error: "Database connection error" });
+
+    if (!username) {
+        reason = 'No username provided';
+        await logValidationAttempt(cleanedUsername, timestamp, isAllowed, reason);
+        return res.status(400).json({ isValid: false, error: "Username required" });
+    }
+
+    cleanedUsername = username.trim().toLowerCase();
+    const userDocRef = db.collection('users').doc(cleanedUsername);
+    console.log(`Validation attempt for user: "${cleanedUsername}"`);
+
+    // 1. Check Whitelist
+    if (!allowedUsers.includes(cleanedUsername)) {
+        reason = 'Not on whitelist';
+        console.log("Access DENIED - Not whitelisted.");
+        await logValidationAttempt(cleanedUsername, timestamp, isAllowed, reason);
+        return res.status(403).json({ isValid: false });
+    }
+
+    // 2. Check isEnabled status in 'users' collection
+    try {
+        const userDoc = await userDocRef.get();
+        if (!userDoc.exists) {
+            console.log(`User "${cleanedUsername}" not in DB, creating with isEnabled: true.`);
+            await userDocRef.set({ isEnabled: true, username: cleanedUsername });
+            isAllowed = true;
+            reason = 'Access Granted (New User)';
+        } else {
+            const userData = userDoc.data();
+            if (userData.isEnabled === false) {
+                isAllowed = false;
+                reason = 'Disabled by admin';
+                console.log("Access DENIED - User disabled by admin.");
+            } else {
+                isAllowed = true;
+                reason = 'Access Granted';
+            }
+        }
+    } catch (dbError) {
+        console.error("Firestore error checking user status:", dbError);
+        isAllowed = false;
+        reason = 'Database error during status check';
+        await logValidationAttempt(cleanedUsername, timestamp, isAllowed, reason);
+        return res.status(500).json({ isValid: false, error: "Database error" });
+    }
+
+    await logValidationAttempt(cleanedUsername, timestamp, isAllowed, reason);
+    res.status(isAllowed ? 200 : 403).json({ isValid: isAllowed });
+});
+
+// --- AI Proxy Endpoints ---
+async function checkUserStatusForAI(username) {
+    if (!db) throw new Error("Database not available");
+    const userDoc = await db.collection('users').doc(username.trim().toLowerCase()).get();
+    if (!userDoc.exists || userDoc.data().isEnabled === false) {
+        console.log(`AI Request Denied: User "${username}" not found or disabled.`);
+        return false;
+    }
+    return true;
+}
+
+app.post('/api/solve-quiz', async (req, res) => {
+    try {
+        if (!await checkUserStatusForAI(req.body.username)) return res.status(403).json({ error: "Access Denied" });
+        const { question, options, tableData, incorrectOptions } = req.body;
+        let promptStart = tableData ? `Use table data...\n\nTABLE DATA:\n${tableData}\n\n---\n\n` : "";
+        let promptMain = `Select BEST answer...\n\nQuestion: ${question}\n\nOptions:\n${options.map(opt => `- ${opt}`).join('\n')}\n\nSelected Option Text:`;
+        let promptEnd = (incorrectOptions && incorrectOptions.length > 0) ? `\n\nIMPORTANT: ... Do NOT choose: ${incorrectOptions.join(', ')}` : "";
+        const fullPrompt = promptStart + promptMain + promptEnd;
+
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${OPENAI_API_KEY}`},
+            body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: fullPrompt }] })
+        });
+        const data = await response.json();
+        const answer = data.choices[0].message.content.trim().replace(/^"|"$/g, '');
+        res.status(200).json({ answer: answer });
+    } catch (error) { console.error("Error in /api/solve-quiz:", error); res.status(500).json({ error: error.message }); }
+});
+
+app.post('/api/solve-dnd', async (req, res) => {
+    try {
+        if (!await checkUserStatusForAI(req.body.username)) return res.status(403).json({ error: "Access Denied" });
+        const { items, zones, hint } = req.body;
+        let prompt = `Sort items into categories...\n\nITEMS:\n- ${items.join('\n- ')}\n\nZONES:\n${zones.map((zone, index) => `- Zone ${index}: ${zone}`).join('\n')}\n`;
+        if (hint && hint.trim() && !hint.toLowerCase().includes("incorrect")) { prompt += `\nCRUCIAL HINT...\n"${hint}"\n`; }
+        else { prompt += `\nDetermine correct zone...\n`; }
+        prompt += `\nYour response MUST be ONLY a valid JSON array...\nExample:\n[\n  {"item": "Item A", "zoneIndex": 1}...\n]\n`;
+
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${OPENAI_API_KEY}`},
+            body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: prompt }] })
+        });
+        const data = await response.json();
+        const rawContent = data.choices[0].message.content;
+        const jsonMatch = rawContent.match(/\[\s*\{[\s\S]*?\}\s*]/);
+        if (!jsonMatch) throw new Error("No valid JSON array in AI response.");
+        res.status(200).json({ solution: JSON.parse(jsonMatch[0]) });
+    } catch (error) { console.error("Error in /api/solve-dnd:", error); res.status(500).json({ error: error.message }); }
+});
+
+// --- NEW: TROLL COMMAND ENDPOINT (for extension to check) ---
+app.get('/api/check-command', async (req, res) => {
+    const { username } = req.query;
+    if (!username || !db) return res.json(null); // No username or DB, send no command
+
+    const cleanedUsername = username.trim().toLowerCase();
+    const commandDocRef = db.collection('liveCommands').doc(cleanedUsername);
+    
+    try {
+        const doc = await commandDocRef.get();
+        if (doc.exists) {
+            const command = doc.data();
+            console.log(`Sending command to user "${cleanedUsername}":`, command.command);
+            // Delete the command after reading it so it doesn't run again
+            await commandDocRef.delete();
+            res.status(200).json(command);
+        } else {
+            res.json(null); // No command waiting
+        }
+    } catch (error) {
+        console.error("Error checking command:", error);
+        res.json(null);
+    }
+});
+
+
+// ===================================
+// ADMIN-ONLY ENDPOINTS
+// ===================================
+
 app.post('/api/admin/login', (req, res) => {
     const { password } = req.body;
     if (!ADMIN_PASSWORD || password !== ADMIN_PASSWORD) {
-         console.log("Admin login failed.");
         return res.status(401).json({ success: false });
     }
-    console.log("Admin login successful.");
     res.status(200).json({ success: true });
 });
 
-// Get Users (Protected)
 app.get('/api/admin/users', checkAdminPassword, async (req, res) => {
     if (!db) return res.status(500).json({ error: "Database not available" });
     try {
@@ -186,104 +224,49 @@ app.get('/api/admin/users', checkAdminPassword, async (req, res) => {
             isEnabled: doc.data().isEnabled ?? true
         }));
         res.status(200).json(usersList);
-    } catch (error) {
-        console.error("Error fetching users:", error);
-        res.status(500).json({ error: "Failed to fetch users" });
-    }
+    } catch (error) { res.status(500).json({ error: "Failed to fetch users" }); }
 });
 
-// Toggle User Status (Protected)
 app.post('/api/admin/toggle-user', checkAdminPassword, async (req, res) => {
-    const { username, isEnabled } = req.body;
     if (!db) return res.status(500).json({ error: "Database not available" });
+    const { username, isEnabled } = req.body;
     if (!username || typeof isEnabled !== 'boolean') {
         return res.status(400).json({ error: 'Invalid request body' });
     }
-
     try {
-        const userDocRef = db.collection('users').doc(username.toLowerCase());
-        await userDocRef.set({ isEnabled: isEnabled }, { merge: true });
+        await db.collection('users').doc(username.toLowerCase()).set({ isEnabled }, { merge: true });
         console.log(`Admin toggled user "${username}" to isEnabled: ${isEnabled}`);
         res.status(200).json({ success: true });
+    } catch (error) { res.status(500).json({ error: "Failed to update user" }); }
+});
+
+// --- NEW: ADMIN ENDPOINT TO SEND TROLL COMMAND ---
+app.post('/api/admin/send-command', checkAdminPassword, async (req, res) => {
+    if (!db) return res.status(500).json({ error: "Database not available" });
+    const { username, command, message } = req.body;
+    if (!username || !command) {
+        return res.status(400).json({ error: "Invalid request body" });
+    }
+    
+    try {
+        const cleanedUsername = username.trim().toLowerCase();
+        const commandDocRef = db.collection('liveCommands').doc(cleanedUsername);
+        
+        const newCommand = {
+            command: command, // "showEyes", "showText", "hide"
+            message: message || "", // Text to display
+            timestamp: admin.firestore.FieldValue.serverTimestamp()
+        };
+        
+        // Set the command, overwriting any previous one
+        await commandDocRef.set(newCommand);
+        console.log(`Admin sent command "${command}" to user "${cleanedUsername}"`);
+        res.status(200).json({ success: true });
     } catch (error) {
-        console.error(`Error toggling user ${username}:`, error);
-        res.status(500).json({ error: "Failed to update user status" });
+        console.error("Error sending command:", error);
+        res.status(500).json({ error: "Failed to send command" });
     }
 });
-
-// --- AI Proxy Endpoints (Unchanged, but now check isEnabled via /api/validate first) ---
-app.post('/api/solve-quiz', async (req, res) => {
-    const { username, question, options, tableData, incorrectOptions } = req.body;
-     // Quick check if user exists and is enabled
-     if (db) {
-         try {
-             const userDoc = await db.collection('users').doc(username.trim().toLowerCase()).get();
-             if (!userDoc.exists || userDoc.data().isEnabled === false) {
-                 console.log(`AI Request Denied: User "${username}" not found or disabled.`);
-                 return res.status(403).json({ error: "Access Denied" });
-             }
-         } catch (e) {
-             console.error("Error checking user status during AI request:", e);
-             return res.status(500).json({ error: "Database error" });
-         }
-     } else {
-         return res.status(500).json({ error: "Database not available" });
-     }
-
-
-    let promptStart = tableData ? `Use the following table data...\n\nTABLE DATA:\n${tableData}\n\n---\n\n` : "";
-    let promptMain = `From the options provided below, select the single BEST answer...\n\nQuestion: ${question}\n\nOptions:\n${options.map(opt => `- ${opt}`).join('\n')}\n\nSelected Option Text:`;
-    let promptEnd = (incorrectOptions && incorrectOptions.length > 0) ? `\n\nIMPORTANT: ... Do NOT choose any of these WRONG answers: ${incorrectOptions.join(', ')}` : "";
-    const fullPrompt = promptStart + promptMain + promptEnd;
-    try {
-        const response = await fetch("https://api.openai.com/v1/chat/completions", {
-            method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${OPENAI_API_KEY}`},
-            body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: fullPrompt }] })
-        });
-        const data = await response.json();
-        if (data.choices && data.choices[0]) {
-            const answer = data.choices[0].message.content.trim().replace(/^"|"$/g, '');
-            res.status(200).json({ answer: answer });
-        } else { res.status(500).json({ error: "Invalid response from OpenAI." }); }
-    } catch (error) { console.error("Error calling OpenAI:", error); res.status(500).json({ error: "API call failed." }); }
-});
-app.post('/api/solve-dnd', async (req, res) => {
-    const { username, items, zones, hint } = req.body;
-     // Quick check if user exists and is enabled
-     if (db) {
-         try {
-             const userDoc = await db.collection('users').doc(username.trim().toLowerCase()).get();
-             if (!userDoc.exists || userDoc.data().isEnabled === false) {
-                  console.log(`AI Request Denied: User "${username}" not found or disabled.`);
-                 return res.status(403).json({ error: "Access Denied" });
-             }
-         } catch (e) {
-              console.error("Error checking user status during AI request:", e);
-             return res.status(500).json({ error: "Database error" });
-         }
-     } else {
-          return res.status(500).json({ error: "Database not available" });
-     }
-
-    let prompt = `You are an assistant for a drag-and-drop puzzle...\n\nITEMS TO SORT:\n- ${items.join('\n- ')}\n\nCATEGORIES (ZONES):\n${zones.map((zone, index) => `- Zone ${index}: ${zone}`).join('\n')}\n`;
-    if (hint && hint.trim() && !hint.toLowerCase().includes("incorrect")) { prompt += `\nCRUCIAL HINT...\n"${hint}"\n`; }
-    else { prompt += `\nDetermine the correct zone...\n`; }
-    prompt += `\nYour response MUST be ONLY a valid JSON array...\nExample response format:\n[\n  {"item": "Item A", "zoneIndex": 1}...\n]\n`;
-    try {
-        const response = await fetch("https://api.openai.com/v1/chat/completions", {
-            method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${OPENAI_API_KEY}`},
-            body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: prompt }] })
-        });
-        const data = await response.json();
-        if (!data.choices || !data.choices[0] || !data.choices[0].message || !data.choices[0].message.content) { throw new Error("Invalid D&D API response structure."); }
-        const rawContent = data.choices[0].message.content;
-        const jsonMatch = rawContent.match(/\[\s*\{[\s\S]*?\}\s*]/);
-        if (!jsonMatch) { throw new Error("No valid JSON array found in response."); }
-        const solution = JSON.parse(jsonMatch[0]);
-        res.status(200).json({ solution: solution });
-    } catch (error) { console.error("Error calling OpenAI for D&D:", error); res.status(500).json({ error: "D&D API call failed." }); }
-});
-
 
 // --- Server Start ---
 const port = process.env.PORT || 3000;

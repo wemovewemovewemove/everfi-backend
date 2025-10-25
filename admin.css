@@ -1,7 +1,5 @@
-/* Import the same font */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap');
 
-/* Define the color palette */
 :root {
     --background: #1a1a1d;
     --surface: #2c2c31;
@@ -38,9 +36,7 @@ h1, h2 {
     font-weight: 700;
 }
 
-h1 {
-    font-size: 2em;
-}
+h1 { font-size: 2em; }
 
 h2 {
     font-size: 1.5em;
@@ -53,8 +49,19 @@ h2 {
     margin-top: 20px;
 }
 
-input[type="password"] {
-    width: calc(100% - 22px);
+/* NEW: Panel style for grouping */
+.panel {
+    background-color: var(--background);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 20px;
+    margin-bottom: 20px;
+}
+
+input[type="password"],
+input[type="text"],
+select {
+    width: 100%;
     padding: 12px 10px;
     margin-bottom: 10px;
     background-color: var(--background);
@@ -62,15 +69,18 @@ input[type="password"] {
     border-radius: 6px;
     color: var(--text-primary);
     font-size: 14px;
-    box-sizing: border-box;
+    box-sizing: border-box; /* Important */
     transition: border-color 0.3s, box-shadow 0.3s;
 }
 
-input[type="password"]::placeholder {
+input[type="password"]::placeholder,
+input[type="text"]::placeholder {
     color: var(--text-secondary);
 }
 
-input[type="password"]:focus {
+input[type="password"]:focus,
+input[type="text"]:focus,
+select:focus {
     outline: none;
     border-color: var(--primary);
     box-shadow: 0 0 10px var(--primary-glow);
@@ -119,13 +129,8 @@ button:disabled {
     height: 20px;
 }
 
-.error {
-    color: var(--error);
-}
-
-.success {
-    color: var(--success);
-}
+.error { color: var(--error); }
+.success { color: var(--success); }
 
 table {
     width: 100%;
@@ -144,7 +149,7 @@ th, td {
 }
 
 th {
-    background-color: #333; /* Slightly darker header */
+    background-color: #333;
     color: var(--primary);
 }
 
@@ -152,14 +157,37 @@ tr:nth-child(even) {
     background-color: var(--surface);
 }
 
-.toggle-button.disable {
+.toggle-button.disable,
+button.disable {
     background-image: none;
     background-color: var(--error);
     border-color: var(--error);
 }
 
-.toggle-button.enable {
+.toggle-button.enable,
+button.enable {
     background-image: none;
     background-color: var(--success);
     border-color: var(--success);
+}
+
+/* NEW: Troll Panel Styles */
+.control-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 15px;
+}
+.control-group label {
+    flex-basis: 120px;
+    flex-shrink: 0;
+    font-weight: 500;
+}
+.control-group input,
+.control-group select {
+    flex-grow: 1;
+    margin-bottom: 0;
+}
+.control-group button {
+    flex-grow: 1;
 }
