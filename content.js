@@ -97,29 +97,39 @@ function createLogGUI() {
 
 // --- VISIBLE LOG: For the user's GUI ---
 function log(message, type = 'info') {
-    createLogGUI(); // Ensure GUI exists
-    const logContent = document.getElementById('log-content');
-    if (!logContent) return; // Exit if GUI somehow failed to create
+    try { // Add try-catch around logging to prevent log errors from breaking the bot
+        createLogGUI(); // Ensure GUI exists
+        const logContent = document.getElementById('log-content');
+        if (!logContent) {
+            console.error("Log GUI content element not found!");
+            return;
+        }
 
-    const time = new Date().toLocaleTimeString();
-    const p = document.createElement('p');
+        const time = new Date().toLocaleTimeString();
+        const p = document.createElement('p');
 
-    // Add color based on type
-    let color = '#d4d4d4'; // Default info color
-    if (type === 'error') color = '#f44747'; // Red
-    if (type === 'success') color = '#4caf50'; // Green
-    if (type === 'system') color = '#569cd6'; // Blue
-    if (type === 'event') color = '#c586c0'; // Purple
+        // Add color based on type
+        let color = '#d4d4d4'; // Default info color
+        if (type === 'error') color = '#f44747'; // Red
+        if (type === 'success') color = '#4caf50'; // Green
+        if (type === 'system') color = '#569cd6'; // Blue
+        if (type === 'event') color = '#c586c0'; // Purple
 
-    p.innerHTML = `<span style="color: #888;">[${time}]</span> <span style="color:${color};">${message}</span>`;
-    Object.assign(p.style, { margin: '0 0 5px 0', lineHeight: '1.4', wordBreak: 'break-word' }); // Prevent overflow
+        // Basic sanitization to prevent potential XSS if message somehow contained HTML
+        const sanitizedMessage = message.toString().replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-    logContent.appendChild(p);
-    // Auto-scroll to the bottom
-    logContent.scrollTop = logContent.scrollHeight;
+        p.innerHTML = `<span style="color: #888;">[${time}]</span> <span style="color:${color};">${sanitizedMessage}</span>`;
+        Object.assign(p.style, { margin: '0 0 5px 0', lineHeight: '1.4', wordBreak: 'break-word' }); // Prevent overflow
 
-    // Also log to console for debugging
-    console.log(`[EVERFI Bot - ${type.toUpperCase()}] ${message}`);
+        logContent.appendChild(p);
+        // Auto-scroll to the bottom
+        logContent.scrollTop = logContent.scrollHeight;
+
+        // Also log to console for debugging
+        console.log(`[EVERFI Bot - ${type.toUpperCase()}] ${message}`);
+    } catch (logError) {
+        console.error("Error occurred within log function:", logError);
+    }
 }
 
 // --- NEW: SILENT LOG: For troll commands (console-only) ---
@@ -145,7 +155,7 @@ function getUsernameFromPage() {
 // --- Bot Action Loop (Controlled by isBotLoopRunning) ---
 function runBot() {
     // Add a visible log at the start to confirm it's trying to run
-    log("runBot triggered.", "event");
+    log("runBot triggered.", "event"); // DEBUG LOG
 
     // Prevent bot actions if troll overlay is active
     if (document.getElementById('troll-overlay')) {
@@ -171,11 +181,11 @@ function runBot() {
     }
 
     // --- Bot loop IS running ---
-    log("Bot loop active, proceeding...", "system"); // Confirm loop is active
+    log("Bot loop active, proceeding...", "system"); // DEBUG LOG Confirm loop is active
 
 
     if (isStuck || isActionInProgress) {
-        log(`runBot skipped: isStuck=${isStuck}, isActionInProgress=${isActionInProgress}`, "system");
+        log(`runBot skipped: isStuck=${isStuck}, isActionInProgress=${isActionInProgress}`, "system"); // DEBUG LOG
         return; // Don't run if stuck or action already in progress
     }
 
@@ -219,19 +229,19 @@ function runBot() {
         // An interactive element was found and handled, reset timer and exit loop iteration
         lastActivityTimestamp = Date.now();
         // isActionInProgress remains true until the action's callback sets it to false
-        log("Interactive element handled.", "event");
+        log("Interactive element handled.", "event"); // DEBUG LOG
         return;
     }
 
     // --- No Interactive Elements Found, Try Navigation ---
     isActionInProgress = false; // Reset flag as no interactions were handled
-    log("No interactive elements found, trying navigation.", "system");
+    log("No interactive elements found, trying navigation.", "system"); // DEBUG LOG
     handleNavigation(); // handleNavigation will set isActionInProgress if it clicks something
 }
 
 // --- Start/Stop Bot Loop Control Functions ---
 function startBotLoop() {
-    log("startBotLoop function called.", "event"); // Add log
+    log("startBotLoop function called.", "event"); // DEBUG LOG
     if (isBotLoopRunning) {
         log("Bot loop already running.", "system");
         return;
@@ -245,20 +255,20 @@ function startBotLoop() {
     // Clear previous interval just in case
     if (botLoopIntervalId) clearInterval(botLoopIntervalId);
     // Start the main loop interval
-    log("Starting setInterval for runBot.", "system");
+    log("Starting setInterval for runBot.", "system"); // DEBUG LOG
     botLoopIntervalId = setInterval(runBot, 2000); // Check every 2 seconds
     runBot(); // Run immediately once
 }
 
 function stopBotLoop() {
-    log("stopBotLoop function called.", "event"); // Add log
+    log("stopBotLoop function called.", "event"); // DEBUG LOG
     if (!isBotLoopRunning && !botLoopIntervalId) return; // Already stopped
     log("Stopping bot loop.", "system"); // Keep visible
     isBotLoopRunning = false;
     if (botLoopIntervalId) {
         clearInterval(botLoopIntervalId);
         botLoopIntervalId = null;
-        log("Cleared bot loop interval.", "system");
+        log("Cleared bot loop interval.", "system"); // DEBUG LOG
     }
     // Also reset action/stuck flags immediately
     isActionInProgress = false;
@@ -267,14 +277,19 @@ function stopBotLoop() {
 
 // --- Message Listener (from popup) ---
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    log(`Message received in content script: action=${request.action}`, "event"); // Add log
-    if (request.action === "startBot") {
+    // Add logging inside the listener
+    log(`Message received in content script: action=${request?.action}`, "event"); // DEBUG LOG
+
+    if (request && request.action === "startBot") {
+        log("Received 'startBot' action. Calling startBotLoop().", "system"); // DEBUG LOG
         startBotLoop();
         sendResponse({ status: "started" }); // Confirm start
         return true; // Indicate async response is possible/handled
+    } else {
+        log(`Received unknown message action: ${request?.action}`, "warning"); // DEBUG LOG
     }
-    // Keep listener open if other async messages are expected in the future
-    // return true;
+    // Return false or nothing if not handling the message or not sending an async response
+    // return false; // Or simply omit return if synchronous
 });
 
 
@@ -285,7 +300,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     log("Content script injected. Waiting for 'Start Bot' signal.", "system"); // Keep visible
     getUsernameFromPage(); // Attempt to get username right away
     // Start checking for commands immediately and continuously
-    log("Starting command checker interval.", "system");
+    log("Starting command checker interval.", "system"); // DEBUG LOG
     if (commandCheckIntervalId) clearInterval(commandCheckIntervalId); // Clear old interval if any
     commandCheckIntervalId = setInterval(checkServerForCommands, 3000); // Check every 3 seconds
 })();
@@ -358,7 +373,7 @@ function handleNavigation() {
             simulateRealClick(button);
             isActionInProgress = true; // Mark action in progress
             lastActivityTimestamp = Date.now(); // Reset timer on successful click
-            setTimeout(()=> isActionInProgress = false, 800); // Allow brief time for page reaction
+            setTimeout(()=> { if (isActionInProgress) isActionInProgress = false; }, 800); // Allow brief time for page reaction, ensure flag resets
             return; // Stop after clicking one button
         }
     }
@@ -373,7 +388,7 @@ function handleNavigation() {
         simulateRealClick(navButtonByText);
         isActionInProgress = true;
         lastActivityTimestamp = Date.now();
-        setTimeout(()=> isActionInProgress = false, 800);
+        setTimeout(()=> { if (isActionInProgress) isActionInProgress = false; }, 800);
         return;
     }
 
@@ -486,7 +501,7 @@ function solveNewApiQuiz() {
                  log(`Could not find parent container for answer: "${targetLabel.innerText.trim()}". It might have changed.`, "error");
             }
             // Reset flag after a delay allowing for UI updates
-            setTimeout(() => { isActionInProgress = false; }, 1800);
+            setTimeout(() => { if (isActionInProgress) isActionInProgress = false; }, 1800);
         });
         return true; // Indicate action initiated
     }
@@ -552,7 +567,7 @@ function solveRankingPuzzle() {
             const submitButton = findClickableButton(['submit']);
             if (submitButton) { log("Submitting ranking permutation.", "system"); simulateRealClick(submitButton); } // Visible log
             else log("Could not find submit button after ranking.", "warning");
-            setTimeout(() => isActionInProgress = false, 1500); // Allow feedback time
+            setTimeout(() => { if (isActionInProgress) isActionInProgress = false; }, 1500); // Allow feedback time
         }, delay + 500);
         return true;
     }
@@ -590,14 +605,14 @@ function solveDragAndDropPuzzle() {
                      log(`Item "${itemName}" not found in hardcoded solution for ${puzzleId}.`, "warning");
                 }
             });
-            setTimeout(() => { const sb = findClickableButton(['submit']); if (sb) simulateRealClick(sb); setTimeout(() => isActionInProgress = false, 1500); }, delay + 500);
+            setTimeout(() => { const sb = findClickableButton(['submit']); if (sb) simulateRealClick(sb); setTimeout(() => { if (isActionInProgress) isActionInProgress = false; }, 1500); }, delay + 500);
         } else {
             log("No hardcoded answer found. Engaging AI.", "system"); // Visible log
             if (container.dataset.aiAttempted === 'true') { log("AI already attempted for this D&D. Halting.", "error"); isStuck = true; isActionInProgress = false; return true; }
             container.dataset.aiAttempted = 'true';
             const username = getUsernameFromPage();
             if (!username) { log("Halting: Username not found for API.", "error"); isStuck = true; isActionInProgress = false; return true; }
-            solveDragAndDropWithAI(container, username);
+            solveDragAndDropWithAI(container, username); // This function will reset isActionInProgress
         }
         return true;
     }
@@ -634,7 +649,7 @@ function solveQuizQuestion() {
             log(`Critical assessment detected. Engaging AI solver.`, "success"); // Visible log
             const username = getUsernameFromPage();
             if (!username) { log("Halting: Username not found for API.", "error"); isStuck = true; isActionInProgress = false; return true; }
-            solveQuizWithAI(questionElement, username);
+            solveQuizWithAI(questionElement, username); // This function will reset isActionInProgress
         } else {
             log("Simple question detected. Selecting first option.", "system"); // Visible log
             const firstOption = quizBlock ? quizBlock.querySelector('label.choices__label:not(.choices__label--disabled)') : null;
@@ -649,11 +664,11 @@ function solveQuizQuestion() {
                         const nextButton = findClickableButton(['next', 'continue']);
                         if (nextButton) simulateRealClick(nextButton);
                     }
-                    setTimeout(() => isActionInProgress = false, 1500); // Allow feedback time
+                    setTimeout(() => { if (isActionInProgress) isActionInProgress = false; }, 1500); // Allow feedback time
                 }, 1000);
             } else {
                  log("Could not find selectable options for simple question.", "error");
-                isActionInProgress = false;
+                isActionInProgress = false; // Reset flag if no option found
             }
         }
         return true;
@@ -664,31 +679,31 @@ function solveQuizQuestion() {
 
 function clickNextAccordion() {
     const el = document.querySelector('button[data-action-target="accordion"][aria-label*="collapsed"]:not([disabled])');
-    if (el && el.offsetParent !== null) { log("PRIORITY 1.5: Found unclicked accordion.", "success"); simulateRealClick(el); setTimeout(() => isActionInProgress = false, 1200); return true; } return false;
+    if (el && el.offsetParent !== null) { log("PRIORITY 1.5: Found unclicked accordion.", "success"); simulateRealClick(el); setTimeout(() => { if (isActionInProgress) isActionInProgress = false; }, 1200); return true; } return false;
 }
 function clickNextFlipCard() {
     const el = document.querySelector('button[data-action-target="flipcard"][aria-label*="Unflipped"]:not([disabled])');
-    if (el && el.offsetParent !== null) { log("PRIORITY 1.6: Found unflipped card.", "success"); simulateRealClick(el); setTimeout(() => isActionInProgress = false, 1200); return true; } return false;
+    if (el && el.offsetParent !== null) { log("PRIORITY 1.6: Found unflipped card.", "success"); simulateRealClick(el); setTimeout(() => { if (isActionInProgress) isActionInProgress = false; }, 1200); return true; } return false;
 }
 function clickNextHotspot() {
     const el = Array.from(document.querySelectorAll('button.btn-hotspot[aria-expanded="false"]:not([disabled])')).find(h => h.offsetParent !== null && !clickedHotspots.includes(h));
-    if (el) { log("PRIORITY 1.7: Found unclicked hotspot.", "success"); clickedHotspots.push(el); simulateRealClick(el); setTimeout(() => isActionInProgress = false, 1200); return true; } return false;
+    if (el) { log("PRIORITY 1.7: Found unclicked hotspot.", "success"); clickedHotspots.push(el); simulateRealClick(el); setTimeout(() => { if (isActionInProgress) isActionInProgress = false; }, 1200); return true; } return false;
 }
 function clickNextTab() {
     const el = Array.from(document.querySelectorAll('button[data-action-target="tab"][aria-label*="Not completed"]:not([disabled])')).find(t => t.offsetParent !== null && !clickedTabs.includes(t));
-    if (el) { log("PRIORITY 1.8: Found unclicked tab.", "success"); clickedTabs.push(el); simulateRealClick(el); setTimeout(() => isActionInProgress = false, 1200); return true; } return false;
+    if (el) { log("PRIORITY 1.8: Found unclicked tab.", "success"); clickedTabs.push(el); simulateRealClick(el); setTimeout(() => { if (isActionInProgress) isActionInProgress = false; }, 1200); return true; } return false;
 }
 function clickNextModalButton() {
     const el = Array.from(document.querySelectorAll('button[data-actiontype="open_modal"]:not([disabled])')).find(b => b.offsetParent !== null && !clickedModals.includes(b));
-    if (el) { log("PRIORITY 1.9: Found modal button.", "success"); clickedModals.push(el); simulateRealClick(el); setTimeout(() => isActionInProgress = false, 1200); return true; } return false;
+    if (el) { log("PRIORITY 1.9: Found modal button.", "success"); clickedModals.push(el); simulateRealClick(el); setTimeout(() => { if (isActionInProgress) isActionInProgress = false; }, 1200); return true; } return false;
 }
 function answerRatingQuestion() {
     const el = Array.from(document.querySelectorAll('div.choices--rating fieldset.choices__fieldset')).find(f => f.offsetParent !== null && !f.querySelector('input[type="radio"]:checked'));
-    if (el) { log("PRIORITY 1.10: Found unanswered star rating.", "success"); const star = el.querySelector('label.choices__label'); if (star) simulateRealClick(star); setTimeout(() => isActionInProgress = false, 1000); return true; } return false;
+    if (el) { log("PRIORITY 1.10: Found unanswered star rating.", "success"); const star = el.querySelector('label.choices__label'); if (star) simulateRealClick(star); setTimeout(() => { if (isActionInProgress) isActionInProgress = false; }, 1000); return true; } return false;
 }
 function answerGenericChoice() {
     const el = Array.from(document.querySelectorAll('.choices__list, fieldset')).find(c => c.offsetParent !== null && !c.closest('.choices--rating') && c.querySelector('input[type="radio"]') && !c.querySelector('input[type="radio"]:checked') && !c.closest('#questionContainer') && !c.closest('.assessment-question') && !c.dataset.solved);
-    if (el) { log("PRIORITY 1.11: Found unanswered generic choice.", "success"); const label = el.querySelector('label.qs-choices__label, label.choices__label'); if (label) { simulateRealClick(label); el.dataset.solved = 'true'; } setTimeout(() => isActionInProgress = false, 1000); return true; } return false;
+    if (el) { log("PRIORITY 1.11: Found unanswered generic choice.", "success"); const label = el.querySelector('label.qs-choices__label, label.choices__label'); if (label) { simulateRealClick(label); el.dataset.solved = 'true'; } setTimeout(() => { if (isActionInProgress) isActionInProgress = false; }, 1000); return true; } return false;
 }
 
 
@@ -719,7 +734,7 @@ function solveDragAndDropWithAI(container, username) {
              const submitButton = findClickableButton(['submit']);
              if (submitButton) simulateRealClick(submitButton);
              else log("No submit button found after AI D&D.", "warning");
-             setTimeout(() => isActionInProgress = false, 1500); // Allow feedback time
+             setTimeout(() => { if (isActionInProgress) isActionInProgress = false; }, 1500); // Allow feedback time
         }, delay + 500);
     });
     // Action initiated, isActionInProgress remains true until callback finishes
@@ -747,7 +762,7 @@ function solveQuizWithAI(questionElement, username) {
             if (submitButton && !submitButton.disabled && document.body.contains(submitButton)) {
                 log("Clicking Submit button.", "system"); simulateRealClick(submitButton); // Visible log
                 setTimeout(() => {
-                    const currentWrapper = quizBlock.closest('.one-at-a-time-wrapper, .one-at-a-time-container'); if (!currentWrapper) { isActionInProgress = false; return; }
+                    const currentWrapper = quizBlock.closest('.one-at-a-time-wrapper, .one-at-a-time-container'); if (!currentWrapper) { if (isActionInProgress) isActionInProgress = false; return; } // Wrapper gone? Assume success
                     const continueButton = currentWrapper.querySelector('button.assessment__btn--next');
                     if (continueButton && !continueButton.disabled && continueButton.offsetParent !== null) { log("Answer correct. Clicking Continue.", "success"); simulateRealClick(continueButton); isActionInProgress = false; return; } // Visible log
                     const retryButton = currentWrapper.querySelector('button.assessment__btn--retry'); const feedbackElement = currentWrapper.querySelector('.assessment-feedback, [class*="feedback"]'); const isRetryVisible = retryButton && !retryButton.disabled && retryButton.offsetParent !== null; const isFeedbackVisible = feedbackElement && feedbackElement.offsetParent !== null && feedbackElement.innerText.trim().length > 0;
