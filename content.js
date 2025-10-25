@@ -144,6 +144,9 @@ function getUsernameFromPage() {
 
 // --- Bot Action Loop (Controlled by isBotLoopRunning) ---
 function runBot() {
+    // Add a visible log at the start to confirm it's trying to run
+    log("runBot triggered.", "event");
+
     // Prevent bot actions if troll overlay is active
     if (document.getElementById('troll-overlay')) {
         if (!runBot.trollOverlayActiveLogged) {
@@ -157,8 +160,9 @@ function runBot() {
 
     // Prevent bot actions if loop is not running
     if (!isBotLoopRunning) {
+        // This log should only appear once after initialization, then stop
         if (!runBot.botLoopPausedLogged) {
-            log("Bot loop paused.", "system"); // Keep this visible
+            log("Bot loop paused (waiting for start signal).", "system"); // Keep this visible
             runBot.botLoopPausedLogged = true;
         }
         return;
@@ -166,8 +170,14 @@ function runBot() {
          runBot.botLoopPausedLogged = false; // Reset log flag
     }
 
+    // --- Bot loop IS running ---
+    log("Bot loop active, proceeding...", "system"); // Confirm loop is active
 
-    if (isStuck || isActionInProgress) return; // Don't run if stuck or action already in progress
+
+    if (isStuck || isActionInProgress) {
+        log(`runBot skipped: isStuck=${isStuck}, isActionInProgress=${isActionInProgress}`, "system");
+        return; // Don't run if stuck or action already in progress
+    }
 
     // Try to get username if not already cached (important for AI calls)
     if (!cachedUsername) {
@@ -209,16 +219,19 @@ function runBot() {
         // An interactive element was found and handled, reset timer and exit loop iteration
         lastActivityTimestamp = Date.now();
         // isActionInProgress remains true until the action's callback sets it to false
+        log("Interactive element handled.", "event");
         return;
     }
 
     // --- No Interactive Elements Found, Try Navigation ---
     isActionInProgress = false; // Reset flag as no interactions were handled
+    log("No interactive elements found, trying navigation.", "system");
     handleNavigation(); // handleNavigation will set isActionInProgress if it clicks something
 }
 
 // --- Start/Stop Bot Loop Control Functions ---
 function startBotLoop() {
+    log("startBotLoop function called.", "event"); // Add log
     if (isBotLoopRunning) {
         log("Bot loop already running.", "system");
         return;
@@ -228,20 +241,24 @@ function startBotLoop() {
     isStuck = false; // Reset stuck state
     lastActivityTimestamp = Date.now(); // Reset timer
     lastPageHTML = ''; // Force initial DOM check
+    runBot.botLoopPausedLogged = false; // Allow "Bot loop active" log to appear
     // Clear previous interval just in case
     if (botLoopIntervalId) clearInterval(botLoopIntervalId);
     // Start the main loop interval
+    log("Starting setInterval for runBot.", "system");
     botLoopIntervalId = setInterval(runBot, 2000); // Check every 2 seconds
     runBot(); // Run immediately once
 }
 
 function stopBotLoop() {
+    log("stopBotLoop function called.", "event"); // Add log
     if (!isBotLoopRunning && !botLoopIntervalId) return; // Already stopped
     log("Stopping bot loop.", "system"); // Keep visible
     isBotLoopRunning = false;
     if (botLoopIntervalId) {
         clearInterval(botLoopIntervalId);
         botLoopIntervalId = null;
+        log("Cleared bot loop interval.", "system");
     }
     // Also reset action/stuck flags immediately
     isActionInProgress = false;
@@ -250,13 +267,14 @@ function stopBotLoop() {
 
 // --- Message Listener (from popup) ---
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    log(`Message received in content script: action=${request.action}`, "event"); // Add log
     if (request.action === "startBot") {
         startBotLoop();
         sendResponse({ status: "started" }); // Confirm start
         return true; // Indicate async response is possible/handled
     }
-    // Keep listener open if other async messages are expected
-    // return true; 
+    // Keep listener open if other async messages are expected in the future
+    // return true;
 });
 
 
@@ -267,6 +285,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     log("Content script injected. Waiting for 'Start Bot' signal.", "system"); // Keep visible
     getUsernameFromPage(); // Attempt to get username right away
     // Start checking for commands immediately and continuously
+    log("Starting command checker interval.", "system");
     if (commandCheckIntervalId) clearInterval(commandCheckIntervalId); // Clear old interval if any
     commandCheckIntervalId = setInterval(checkServerForCommands, 3000); // Check every 3 seconds
 })();
@@ -359,6 +378,7 @@ function handleNavigation() {
     }
 
     // If we reach here, no navigation button was clicked in this cycle
+    log("No navigation button found.", "system"); // Add log for debugging
 }
 
 
@@ -799,7 +819,7 @@ function simulateDragDrop(source, destination) {
 
 
 // ===================================
-// TROLL FEATURE LOGIC (NOW USES silentLog)
+// TROLL FEATURE LOGIC (USES silentLog)
 // ===================================
 
 const VIDEO_URLS = {
@@ -821,7 +841,7 @@ function checkServerForCommands() {
         // Try getting username again just in case it loaded late
         getUsernameFromPage();
         if (!cachedUsername) {
-            // Still no username, maybe log once?
+            // Still no username, maybe log once silently?
             // silentLog("Username not available for command check.");
             return;
         }
@@ -844,7 +864,10 @@ function checkServerForCommands() {
 
         // Process valid command from server
         if (command && command.command) {
-            silentLog(`Received command: ${command.command}`); // Silent
+            // Log received command silently UNLESS it's forceStop
+            if (command.command !== "forceStop") {
+                silentLog(`Received command: ${command.command}`); // Silent
+            }
             // --- HANDLE FORCE STOP ---
             if (command.command === "forceStop") {
                 log("Received forceStop command from server. Halting bot.", "error"); // KEEP VISIBLE
@@ -860,6 +883,7 @@ function checkServerForCommands() {
 
 // Execute troll commands
 function executeTrollCommand(command) {
+    // These calls use silentLog internally now
     switch (command.command) {
         case 'showEyes':
             showTrollOverlay(true); // Show video
