@@ -5,9 +5,9 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static(__dirname)); // Serve static files (admin.html, etc.)
+app.use(express.static(__dirname)); // Serve static files
 
-// --- Read Environment Variables ---
+// --- Environment Variables ---
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const WHITELIST_STRING = process.env.WHITELIST || "";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
@@ -20,7 +20,7 @@ if (!OPENAI_API_KEY) console.error("FATAL ERROR: OPENAI_API_KEY is not set.");
 if (!ADMIN_PASSWORD) console.warn("WARNING: ADMIN_PASSWORD is not set.");
 console.log("Server started. Allowed users:", allowedUsers);
 
-// --- Initialize Firebase Admin SDK ---
+// --- Firebase Initialization ---
 let db;
 try {
     const serviceAccountString = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
@@ -33,29 +33,88 @@ try {
     console.error("Firebase Admin SDK initialization failed:", error);
     db = null;
 }
-// ------------------------------------
 
-// Simple test route
-app.get('/', (req, res) => {
-  res.send('Your backend server is running!');
+// --- Helper: Log Validation Attempt ---
+async function logValidationAttempt(username, timestamp, allowed, reason) { /* ... remains the same ... */ }
+// --- Middleware: Check Admin Password ---
+function checkAdminPassword(req, res, next) { /* ... remains the same ... */ }
+// --- Helper: Check User Status for AI ---
+async function checkUserStatusForAI(username) { /* ... remains the same ... */ }
+
+
+// ===================================
+// USER-FACING ENDPOINTS
+// ===================================
+
+app.get('/', (req, res) => res.send('Backend server is running!'));
+
+// --- VALIDATE (For Popup Button) ---
+app.post('/api/validate', async (req, res) => { /* ... remains the same: checks whitelist and enabled status ... */ });
+
+// --- AI PROXY ENDPOINTS ---
+app.post('/api/solve-quiz', async (req, res) => { /* ... remains the same: includes checkUserStatusForAI ... */ });
+app.post('/api/solve-dnd', async (req, res) => { /* ... remains the same: includes checkUserStatusForAI ... */ });
+
+// --- CHECK COMMAND (Modified for real-time disable) ---
+app.get('/api/check-command', async (req, res) => {
+    const { username } = req.query;
+    if (!username || !db) return res.json(null); // No username or DB
+
+    const cleanedUsername = username.trim().toLowerCase();
+    const userDocRef = db.collection('users').doc(cleanedUsername);
+    const commandDocRef = db.collection('liveCommands').doc(cleanedUsername);
+
+    try {
+        // 1. Check if user is enabled FIRST
+        const userDoc = await userDocRef.get();
+        if (userDoc.exists && userDoc.data().isEnabled === false) {
+            console.log(`User "${cleanedUsername}" is disabled. Sending forceStop.`);
+            // Send forceStop command immediately if disabled
+            await commandDocRef.delete(); // Clear any pending admin command
+            return res.status(200).json({ command: "forceStop" });
+        }
+
+        // 2. User is enabled (or doesn't exist yet), check for admin commands
+        const commandDoc = await commandDocRef.get();
+        if (commandDoc.exists) {
+            const command = commandDoc.data();
+            console.log(`Sending command to user "${cleanedUsername}":`, command.command);
+            await commandDocRef.delete(); // Delete after reading
+            return res.status(200).json(command);
+        } else {
+            return res.json(null); // No command waiting
+        }
+    } catch (error) {
+        console.error("Error checking command/status:", error);
+        return res.json(null); // Send null on error
+    }
 });
 
-// --- Helper Function to Log Validation Attempts ---
+
+// ===================================
+// ADMIN-ONLY ENDPOINTS
+// ===================================
+app.post('/api/admin/login', (req, res) => { /* ... remains the same ... */ });
+app.get('/api/admin/users', checkAdminPassword, async (req, res) => { /* ... remains the same ... */ });
+app.post('/api/admin/toggle-user', checkAdminPassword, async (req, res) => { /* ... remains the same ... */ });
+app.post('/api/admin/send-command', checkAdminPassword, async (req, res) => { /* ... remains the same ... */ });
+
+// --- Server Start ---
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`Server listening on port ${port}`));
+
+
+// --- Re-paste full function bodies ---
+
 async function logValidationAttempt(username, timestamp, allowed, reason) {
-    if (!db) {
-        console.error("Firestore not initialized. Cannot log validation attempt.");
-        return;
-    }
+    if (!db) { console.error("Firestore not initialized. Cannot log."); return; }
     try {
         const logEntry = { username, timestamp, allowed, reason };
         const docRef = await db.collection('validationLogs').add(logEntry);
-        console.log(`Logged validation attempt [${reason}] with ID: ${docRef.id}`);
-    } catch (logError) {
-        console.error("Firestore logging failed:", logError);
-    }
+        // console.log(`Logged validation [${reason}] ID: ${docRef.id}`); // Less verbose logging
+    } catch (logError) { console.error("Firestore logging failed:", logError); }
 }
 
-// --- Password check middleware ---
 function checkAdminPassword(req, res, next) {
     const providedPassword = req.headers['admin-password'];
     if (!ADMIN_PASSWORD || providedPassword !== ADMIN_PASSWORD) {
@@ -65,11 +124,21 @@ function checkAdminPassword(req, res, next) {
     next();
 }
 
-// ===================================
-// USER-FACING ENDPOINTS
-// ===================================
+async function checkUserStatusForAI(username) {
+    if (!username || !db) throw new Error("Database not available or username missing");
+    try {
+        const userDoc = await db.collection('users').doc(username.trim().toLowerCase()).get();
+        if (!userDoc.exists || userDoc.data().isEnabled === false) {
+            console.log(`AI Request Denied: User "${username}" not found or disabled.`);
+            return false;
+        }
+        return true;
+    } catch(e) {
+         console.error(`DB Error checking AI status for ${username}: ${e.message}`);
+         throw new Error("Database error checking user status"); // Propagate error
+    }
+}
 
-// --- VALIDATE USERNAME ENDPOINT ---
 app.post('/api/validate', async (req, res) => {
     const { username } = req.body;
     const timestamp = new Date();
@@ -100,7 +169,7 @@ app.post('/api/validate', async (req, res) => {
         const userDoc = await userDocRef.get();
         if (!userDoc.exists) {
             console.log(`User "${cleanedUsername}" not in DB, creating with isEnabled: true.`);
-            await userDocRef.set({ isEnabled: true, username: cleanedUsername });
+            await userDocRef.set({ isEnabled: true, username: cleanedUsername }, { merge: true });
             isAllowed = true;
             reason = 'Access Granted (New User)';
         } else {
@@ -126,17 +195,6 @@ app.post('/api/validate', async (req, res) => {
     res.status(isAllowed ? 200 : 403).json({ isValid: isAllowed });
 });
 
-// --- AI Proxy Endpoints ---
-async function checkUserStatusForAI(username) {
-    if (!db) throw new Error("Database not available");
-    const userDoc = await db.collection('users').doc(username.trim().toLowerCase()).get();
-    if (!userDoc.exists || userDoc.data().isEnabled === false) {
-        console.log(`AI Request Denied: User "${username}" not found or disabled.`);
-        return false;
-    }
-    return true;
-}
-
 app.post('/api/solve-quiz', async (req, res) => {
     try {
         if (!await checkUserStatusForAI(req.body.username)) return res.status(403).json({ error: "Access Denied" });
@@ -150,7 +208,9 @@ app.post('/api/solve-quiz', async (req, res) => {
             method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${OPENAI_API_KEY}`},
             body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: fullPrompt }] })
         });
+        if (!response.ok) throw new Error(`OpenAI API error: ${response.statusText}`);
         const data = await response.json();
+        if (!data.choices || !data.choices[0] || !data.choices[0].message) throw new Error("Invalid OpenAI response structure");
         const answer = data.choices[0].message.content.trim().replace(/^"|"$/g, '');
         res.status(200).json({ answer: answer });
     } catch (error) { console.error("Error in /api/solve-quiz:", error); res.status(500).json({ error: error.message }); }
@@ -169,7 +229,9 @@ app.post('/api/solve-dnd', async (req, res) => {
             method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${OPENAI_API_KEY}`},
             body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: prompt }] })
         });
+        if (!response.ok) throw new Error(`OpenAI API error: ${response.statusText}`);
         const data = await response.json();
+        if (!data.choices || !data.choices[0] || !data.choices[0].message) throw new Error("Invalid OpenAI response structure");
         const rawContent = data.choices[0].message.content;
         const jsonMatch = rawContent.match(/\[\s*\{[\s\S]*?\}\s*]/);
         if (!jsonMatch) throw new Error("No valid JSON array in AI response.");
@@ -177,41 +239,13 @@ app.post('/api/solve-dnd', async (req, res) => {
     } catch (error) { console.error("Error in /api/solve-dnd:", error); res.status(500).json({ error: error.message }); }
 });
 
-// --- NEW: TROLL COMMAND ENDPOINT (for extension to check) ---
-app.get('/api/check-command', async (req, res) => {
-    const { username } = req.query;
-    if (!username || !db) return res.json(null); // No username or DB, send no command
-
-    const cleanedUsername = username.trim().toLowerCase();
-    const commandDocRef = db.collection('liveCommands').doc(cleanedUsername);
-    
-    try {
-        const doc = await commandDocRef.get();
-        if (doc.exists) {
-            const command = doc.data();
-            console.log(`Sending command to user "${cleanedUsername}":`, command.command);
-            // Delete the command after reading it so it doesn't run again
-            await commandDocRef.delete();
-            res.status(200).json(command);
-        } else {
-            res.json(null); // No command waiting
-        }
-    } catch (error) {
-        console.error("Error checking command:", error);
-        res.json(null);
-    }
-});
-
-
-// ===================================
-// ADMIN-ONLY ENDPOINTS
-// ===================================
-
 app.post('/api/admin/login', (req, res) => {
     const { password } = req.body;
     if (!ADMIN_PASSWORD || password !== ADMIN_PASSWORD) {
+         console.log("Admin login failed.");
         return res.status(401).json({ success: false });
     }
+    console.log("Admin login successful.");
     res.status(200).json({ success: true });
 });
 
@@ -221,10 +255,10 @@ app.get('/api/admin/users', checkAdminPassword, async (req, res) => {
         const usersSnapshot = await db.collection('users').orderBy('username').get();
         const usersList = usersSnapshot.docs.map(doc => ({
             username: doc.id,
-            isEnabled: doc.data().isEnabled ?? true
+            isEnabled: doc.data().isEnabled ?? true // Default to true if missing
         }));
         res.status(200).json(usersList);
-    } catch (error) { res.status(500).json({ error: "Failed to fetch users" }); }
+    } catch (error) { console.error("Error fetching users:", error); res.status(500).json({ error: "Failed to fetch users" }); }
 });
 
 app.post('/api/admin/toggle-user', checkAdminPassword, async (req, res) => {
@@ -234,42 +268,29 @@ app.post('/api/admin/toggle-user', checkAdminPassword, async (req, res) => {
         return res.status(400).json({ error: 'Invalid request body' });
     }
     try {
-        await db.collection('users').doc(username.toLowerCase()).set({ isEnabled }, { merge: true });
+        const userDocRef = db.collection('users').doc(username.toLowerCase());
+        await userDocRef.set({ isEnabled: isEnabled, username: username.toLowerCase() }, { merge: true }); // Ensure username field exists
         console.log(`Admin toggled user "${username}" to isEnabled: ${isEnabled}`);
         res.status(200).json({ success: true });
-    } catch (error) { res.status(500).json({ error: "Failed to update user" }); }
+    } catch (error) { console.error(`Error toggling user ${username}:`, error); res.status(500).json({ error: "Failed to update user status" }); }
 });
 
-// --- NEW: ADMIN ENDPOINT TO SEND TROLL COMMAND ---
 app.post('/api/admin/send-command', checkAdminPassword, async (req, res) => {
     if (!db) return res.status(500).json({ error: "Database not available" });
     const { username, command, message } = req.body;
     if (!username || !command) {
         return res.status(400).json({ error: "Invalid request body" });
     }
-    
     try {
         const cleanedUsername = username.trim().toLowerCase();
         const commandDocRef = db.collection('liveCommands').doc(cleanedUsername);
-        
         const newCommand = {
             command: command, // "showEyes", "showText", "hide"
-            message: message || "", // Text to display
+            message: message || "",
             timestamp: admin.firestore.FieldValue.serverTimestamp()
         };
-        
-        // Set the command, overwriting any previous one
         await commandDocRef.set(newCommand);
         console.log(`Admin sent command "${command}" to user "${cleanedUsername}"`);
         res.status(200).json({ success: true });
-    } catch (error) {
-        console.error("Error sending command:", error);
-        res.status(500).json({ error: "Failed to send command" });
-    }
-});
-
-// --- Server Start ---
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log(`Server listening on port ${port}`);
+    } catch (error) { console.error("Error sending command:", error); res.status(500).json({ error: "Failed to send command" }); }
 });
