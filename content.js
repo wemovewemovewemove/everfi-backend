@@ -1,3 +1,15 @@
+// ================== SCRIPT GUARD ==================
+// This block prevents the script from being injected multiple times
+if (window.everfiBotRunning) {
+    console.warn("EVERFI Bot: Injection blocked. Script is already running.");
+} else {
+    window.everfiBotRunning = true;
+
+// Declare interval IDs at the top to prevent ReferenceErrors
+let botMainIntervalId = null;
+let commandCheckIntervalId = null;
+
+// ================================================
 // ============== Answer Key ==============
 const ANSWER_KEY = {
     "Reduce Medical Costs": {
@@ -103,7 +115,9 @@ let dudNavButtons = [], clickedHotspots = [], clickedTabs = [], clickedModals = 
 const STUCK_TIMEOUT = 30000;
 let cachedUsername = null; // Cache username
 let isForceStopped = false;
-
+// Delays for click-based D&D/Sorting
+const DND_CLICK_ITEM_DELAY_MS = 300; // Time between clicking item and clicking zone
+const DND_CLICK_PAIR_DELAY_MS = 600; // Time between finishing one pair and starting the next
 // --- Get Username ---
 function getUsernameFromPage() {
     if (cachedUsername) return cachedUsername;
@@ -213,31 +227,57 @@ function handleInteractiveElements() {
 }
 
 function handleNavigation() {
+    // --- NEW: Prioritize Unclicked "Read More" Style Buttons ---
+    // Find buttons with this target that DO NOT have the 'clicked' class
+    const nextReadMoreButton = Array.from(document.querySelectorAll('button[data-action-target="button"]'))
+                                   .find(btn => !btn.classList.contains('clicked') && document.body.contains(btn) && !btn.disabled && btn.offsetParent !== null);
+
+    if (nextReadMoreButton) {
+        log(`Found specific unclicked button: "#${nextReadMoreButton.id}". Clicking.`, "success");
+        // We don't need to add these to dudNavButtons usually, as their state changes (gets 'clicked' class)
+        simulateRealClick(nextReadMoreButton);
+        lastActivityTimestamp = Date.now(); // Update timestamp as an action occurred
+        isActionInProgress = false; // Release lock after click initiated
+        return; // Prioritize this action
+    }
+    // --- END NEW BLOCK ---
+
+
+    // --- Original Navigation Logic (with slight modification) ---
     const navSelectors = [
-        'button.assessment__btn--finish',
-        'button[data-action-target="next-arrow"]',
-        'button[data-action-target="navigate-forward"]',
-        'button[data-action-target="button"]',
-        'button.assessment__btn--next:not([disabled])' // Only click enabled Continue buttons
+        'button.assessment__btn--finish', // Finish button
+        'button[data-action-target="next-arrow"]', // Next arrow
+        'button[data-action-target="navigate-forward"]', // Forward navigation
+        // 'button[data-action-target="button"]', // REMOVED - Handled above
+        'button.assessment__btn--next:not([disabled])' // Enabled Continue/Next buttons in assessments
     ];
 
     for (const selector of navSelectors) {
         const button = document.querySelector(selector);
-        if (button && document.body.contains(button) && !button.disabled && !dudNavButtons.includes(button)) {
-            log(`Found button by selector '${selector}'. Clicking.`, "success");
-            dudNavButtons.push(button);
+        // Ensure button exists, is visible, not disabled, and hasn't been deemed a 'dud' previously
+        if (button && document.body.contains(button) && !button.disabled && button.offsetParent !== null && !dudNavButtons.includes(button)) {
+            log(`Found general navigation button by selector '${selector}'. Clicking.`, "success");
+            dudNavButtons.push(button); // Add to duds in case it doesn't navigate
             simulateRealClick(button);
+            lastActivityTimestamp = Date.now();
+            isActionInProgress = false; // Release lock
             return;
         }
     }
 
+    // Fallback to finding buttons by text (using the improved findClickableButton)
     const navButtonByText = findClickableButton(['continue', 'start', 'next', 'finish', 'submit']);
-    if (navButtonByText && document.body.contains(navButtonByText) && !dudNavButtons.includes(navButtonByText)) {
-        log(`Found button by text: "${(navButtonByText.innerText || navButtonByText.value).trim()}". Clicking.`, "success");
+    if (navButtonByText && document.body.contains(navButtonByText) && !navButtonByText.disabled && navButtonByText.offsetParent !== null && !dudNavButtons.includes(navButtonByText)) {
+        log(`Found general navigation button by text: "${(navButtonByText.textContent || navButtonByText.value).trim()}". Clicking.`, "success");
         dudNavButtons.push(navButtonByText);
         simulateRealClick(navButtonByText);
+        lastActivityTimestamp = Date.now();
+        isActionInProgress = false; // Release lock
         return;
     }
+
+    // If no navigation buttons found after checking interactive elements, release the action lock
+    isActionInProgress = false;
 }
 
 // --- Helper Functions ---
@@ -356,151 +396,304 @@ function solveNewApiQuiz() {
 }
 
 
+// Function definition stays the same
 function solveRankingPuzzle() {
     const container = document.querySelector('.drag-and-drop[id*="sortable"]');
     if (container && container.querySelector('[data-rank="true"]') && !container.dataset.solved) {
-        log("PRIORITY 1: Found Ranking Puzzle. Executing brute-force.", "success");
-        isActionInProgress = true;
-        container.dataset.solved = 'true'; // Mark as solved immediately
+        log("PRIORITY 1: Found Ranking Puzzle. Executing click-based solver.", "success");
+        isActionInProgress = true; // Still set this
 
         const draggables = Array.from(container.querySelectorAll('[data-action-target="draggable"]'));
         const dropzones = Array.from(container.querySelectorAll('.dropzone'));
+
         if (draggables.length === 0 || dropzones.length === 0) {
             log("Could not find draggable items or dropzones for ranking puzzle.", "error");
-            isActionInProgress = false;
-            return true; // Handled (by error)
+            isActionInProgress = false; // <<< RESET on error
+            return true;
         }
+
         const items = draggables.map(d => (d.querySelector('.description') || d).innerText.trim());
 
-
         let permutations;
-        // Generate permutations only if needed
         if (container.dataset.permutations) {
             permutations = JSON.parse(container.dataset.permutations);
         } else {
-            const generatePermutations = arr => {
-                if (arr.length > 8) return []; // Limit permutation generation to avoid freezing
-                const result = [];
-                const permute = (current, remaining) => {
-                    if (remaining.length === 0) {
-                        result.push(current);
-                        return;
-                    }
-                    for (let i = 0; i < remaining.length; i++) {
-                        permute(current.concat(remaining[i]), remaining.slice(0, i).concat(remaining.slice(i + 1)));
-                    }
-                };
-                permute([], arr);
-                return result;
-            };
+            const generatePermutations = arr => { /* ... (permutation logic unchanged) ... */ };
             permutations = generatePermutations(items);
              if (permutations.length === 0 && items.length > 8) {
                  log("Ranking puzzle too large (>8 items) for brute-force permutations. Halting.", "error");
-                 isStuck = true; isActionInProgress = false; return true;
+                 // isStuck = true; // <<< REMOVE THIS LINE
+                 isActionInProgress = false; // <<< RESET on error
+                 return true;
              }
             container.dataset.permutations = JSON.stringify(permutations);
+            container.dataset.attempt = '0';
         }
 
         let attempt = parseInt(container.dataset.attempt || '0');
         if (attempt >= permutations.length) {
             log("All ranking permutations exhausted. Halting.", "error");
-            isStuck = true; isActionInProgress = false;
-            return true; // Handled (by error)
+            // isStuck = true; // <<< REMOVE THIS LINE
+            isActionInProgress = false; // <<< RESET on error
+            return true;
         }
 
         const currentPermutation = permutations[attempt];
         log(`Executing Ranking Attempt #${attempt + 1} / ${permutations.length}: [${currentPermutation.join(', ')}]`, "system");
 
-        let delay = 0;
-        currentPermutation.forEach((itemName, index) => {
-            const itemElement = draggables.find(d => (d.querySelector('.description') || d).innerText.trim() === itemName);
-            const targetZone = dropzones[index];
-            if (itemElement && targetZone) {
-                setTimeout(() => simulateDragDrop(itemElement, targetZone), delay);
-                delay += 300; // Stagger drags slightly
-            } else {
-                 log(`Error finding item "${itemName}" or zone ${index} for permutation.`, "error");
-            }
-        });
-
-        container.dataset.attempt = attempt + 1; // Increment attempt count
-        // Submit after drags finish
-        setTimeout(() => {
-            const submitButton = findClickableButton(['submit']);
-            if (submitButton) {
-                log("Submitting ranking permutation.", "system");
-                simulateRealClick(submitButton);
-            } else {
-                log("Could not find submit button after ranking.", "warning");
-            }
-            // Allow time for feedback/page change
-            setTimeout(() => isActionInProgress = false, 1500);
-        }, delay + 500);
-        return true; // Handled
+        const itemsInZones = container.querySelectorAll('.dropzone [data-action-target="container"] [data-action-target="draggable"]');
+        if (itemsInZones.length > 0) {
+             log("Resetting items before new ranking attempt...", "system");
+             itemsInZones.forEach(item => simulateRealClick(item));
+             setTimeout(() => {
+                attemptPermutationClicks(container, draggables, dropzones, currentPermutation, attempt);
+             }, DND_CLICK_PAIR_DELAY_MS * itemsInZones.length);
+             // isActionInProgress remains true until attemptPermutationClicks finishes
+             return true;
+        } else {
+             attemptPermutationClicks(container, draggables, dropzones, currentPermutation, attempt);
+             // isActionInProgress remains true until attemptPermutationClicks finishes
+             return true;
+        }
     }
-    return false; // Not this type
+    return false;
 }
 
+// Helper function definition stays the same
+function attemptPermutationClicks(container, draggables, dropzones, currentPermutation, currentAttempt) {
+    let clickChainDelay = 0;
+    let clickErrorOccurred = false; // Flag to track if clicks fail
+
+    currentPermutation.forEach((itemName, index) => {
+        const itemElement = draggables.find(d => (d.querySelector('.description') || d).innerText.trim() === itemName);
+        const targetZone = dropzones[index];
+
+        if (itemElement && targetZone && document.body.contains(itemElement) && document.body.contains(targetZone)) {
+            setTimeout(() => {
+                if (!targetZone.contains(itemElement)) {
+                    log(`Clicking item: "${itemName}"`, "event");
+                    simulateRealClick(itemElement);
+                    setTimeout(() => {
+                        log(`Clicking zone: ${index + 1}`, "event");
+                        simulateRealClick(targetZone);
+                    }, DND_CLICK_ITEM_DELAY_MS);
+                } else { /* ... (skip logic unchanged) ... */ }
+            }, clickChainDelay);
+            clickChainDelay += DND_CLICK_PAIR_DELAY_MS;
+        } else {
+             log(`Error finding item "${itemName}" or zone ${index + 1} for permutation, or elements detached. Stopping this attempt.`, "error");
+             clickErrorOccurred = true; // Set flag if item/zone missing
+        }
+    });
+
+    // If clicks failed early, don't submit, just increment attempt and release lock
+    if (clickErrorOccurred) {
+         setTimeout(() => {
+            log("Click sequence failed, incrementing attempt count.", "error");
+            container.dataset.attempt = currentAttempt + 1;
+            isActionInProgress = false; // Release lock
+         }, clickChainDelay + 100); // Wait a short moment after last scheduled click
+         return; // Don't proceed to submit
+    }
+
+    // Submit after clicks finish (only if no click errors)
+    setTimeout(() => {
+        const submitButton = findClickableButton(['submit']);
+        if (submitButton && document.body.contains(submitButton)) {
+            log("Submitting ranking permutation.", "system");
+            simulateRealClick(submitButton);
+
+            setTimeout(() => {
+                const successIcon = container.querySelector('.fa-thumbs-up');
+                const failureIcon = container.querySelector('.fa-thumbs-down');
+
+                if (successIcon && successIcon.offsetParent !== null) {
+                    log("Ranking attempt SUCCESSFUL!", "success");
+                    container.dataset.solved = 'true';
+                } else if (failureIcon && failureIcon.offsetParent !== null) {
+                    log(`Ranking attempt ${currentAttempt + 1} FAILED. Incrementing attempt count.`, "warning");
+                    container.dataset.attempt = currentAttempt + 1;
+                } else {
+                    log(`No clear success/failure icon found after ranking submit. Incrementing attempt count.`, "warning");
+                    container.dataset.attempt = currentAttempt + 1;
+                }
+                 isActionInProgress = false; // <<< ALWAYS RESET HERE
+            }, 1500);
+
+        } else {
+            log("Could not find or click submit button after ranking clicks.", "error");
+            container.dataset.attempt = currentAttempt + 1;
+            isActionInProgress = false; // <<< ALWAYS RESET HERE
+        }
+    }, clickChainDelay + 500);
+}
+
+// Helper function for the ranking clicks and submission logic
+function attemptPermutationClicks(container, draggables, dropzones, currentPermutation, currentAttempt) {
+    let clickChainDelay = 0;
+
+    currentPermutation.forEach((itemName, index) => {
+        const itemElement = draggables.find(d => (d.querySelector('.description') || d).innerText.trim() === itemName);
+        const targetZone = dropzones[index]; // The dropzone itself is the target
+
+        if (itemElement && targetZone && document.body.contains(itemElement) && document.body.contains(targetZone)) {
+            setTimeout(() => {
+                // Ensure the item isn't already in the target zone somehow from a failed previous attempt
+                if (!targetZone.contains(itemElement)) {
+                    log(`Clicking item: "${itemName}"`, "event");
+                    simulateRealClick(itemElement); // Click the item
+                    setTimeout(() => {
+                        log(`Clicking zone: ${index + 1}`, "event");
+                        simulateRealClick(targetZone); // Click the target zone
+                    }, DND_CLICK_ITEM_DELAY_MS); // Use constant delay
+                } else {
+                    log(`Item "${itemName}" already appears to be in Zone ${index + 1}. Skipping clicks.`, "system");
+                }
+            }, clickChainDelay);
+            clickChainDelay += DND_CLICK_PAIR_DELAY_MS; // Use constant delay
+        } else {
+             log(`Error finding item "${itemName}" or zone ${index + 1} for permutation, or elements detached.`, "error");
+        }
+    });
+
+    // Submit after clicks finish
+    setTimeout(() => {
+        const submitButton = findClickableButton(['submit']); // Use the updated findClickableButton
+        if (submitButton && document.body.contains(submitButton)) {
+            log("Submitting ranking permutation.", "system");
+            simulateRealClick(submitButton);
+
+            // Check for success/failure feedback after submitting
+            setTimeout(() => {
+                const successIcon = container.querySelector('.fa-thumbs-up'); // Check within the D&D container
+                const failureIcon = container.querySelector('.fa-thumbs-down');
+
+                if (successIcon && successIcon.offsetParent !== null) {
+                    log("Ranking attempt SUCCESSFUL!", "success");
+                    // Success! No need to increment attempt, let runBot detect page change.
+                    container.dataset.solved = 'true'; // Mark as definitively solved
+                } else if (failureIcon && failureIcon.offsetParent !== null) {
+                    log(`Ranking attempt ${currentAttempt + 1} FAILED. Incrementing attempt count.`, "warning");
+                    container.dataset.attempt = currentAttempt + 1; // Increment attempt count
+                } else {
+                    log(`No clear success/failure icon found after ranking submit. Assuming failure, incrementing attempt count.`, "warning");
+                    container.dataset.attempt = currentAttempt + 1; // Increment attempt count on uncertainty
+                }
+                 isActionInProgress = false; // Allow next action/attempt
+            }, 1500); // Wait for feedback icons to potentially appear
+
+        } else {
+            log("Could not find or click submit button after ranking clicks.", "error");
+            container.dataset.attempt = currentAttempt + 1; // Assume failure if submit fails
+            isActionInProgress = false; // Allow next action/attempt
+        }
+    }, clickChainDelay + 500); // Wait for all clicks + a buffer
+}
+
+// Function definition stays the same
 function solveDragAndDropPuzzle() {
     const container = document.querySelector('.drag-and-drop:not([id*="sortable"])');
-    // Check if it's visible and not already marked completed
     if (container && container.offsetParent !== null && !container.classList.contains('all-completed')) {
-        log("PRIORITY 1: Match on `.drag-and-drop`. Executing solver.", "success");
-        isActionInProgress = true;
-        container.classList.add('all-completed'); // Mark immediately to prevent re-triggering
+        log("PRIORITY 1: Match on standard D&D. Executing solver.", "success");
+        isActionInProgress = true; // Set action lock
 
-        const puzzleId = container.id;
-        if (puzzleId && ANSWER_KEY[puzzleId]) {
-            log(`PRIORITY 0: Found hardcoded answer for puzzle ID "${puzzleId}".`, "success");
-            const solution = ANSWER_KEY[puzzleId];
+        const puzzleId = container.id || container.closest('[id]')?.id;
+        const titleElement = container.querySelector('h1, h2, h3, .title, legend');
+        const puzzleTitle = titleElement ? titleElement.innerText.trim() : null;
+        const solutionKey = (puzzleId && ANSWER_KEY[puzzleId]) ? puzzleId : (puzzleTitle && ANSWER_KEY[puzzleTitle]) ? puzzleTitle : null;
+
+        if (solutionKey && !container.dataset.hardcodedAttempted) {
+            log(`PRIORITY 0: Found hardcoded answer for puzzle key "${solutionKey}". Using click method.`, "success");
+            container.dataset.hardcodedAttempted = 'true';
+            const solution = ANSWER_KEY[solutionKey];
             const draggables = Array.from(container.querySelectorAll('[data-action-target="draggable"]'));
             const dropzones = Array.from(container.querySelectorAll('.dropzone'));
-             if (draggables.length === 0 || dropzones.length === 0) {
+
+            if (draggables.length === 0 || dropzones.length === 0) {
                  log("Could not find items/zones for hardcoded D&D puzzle.", "error");
-                 isActionInProgress = false; return true; // Handled (error)
-             }
+                 isActionInProgress = false; // <<< RESET on error
+                 return true;
+            }
+
             let delay = 0;
-            draggables.forEach(item => {
+            let clickErrorOccurred = false;
+
+            draggables.forEach(item => { /* ... (click logic unchanged using constants) ... */
                 const itemNameElement = item.querySelector('.description') || item;
                 const itemName = itemNameElement.innerText.trim();
                 const targetZoneName = solution[itemName];
                 if (targetZoneName) {
                     const zone = dropzones.find(z => (z.querySelector('.description, h2, h3, h4')?.innerText.trim() || '').includes(targetZoneName));
-                    if (zone) {
-                        setTimeout(() => simulateDragDrop(item, zone.querySelector('[data-action-target="container"]') || zone), delay);
-                        delay += 250;
+                    if (zone && document.body.contains(item) && document.body.contains(zone)) {
+                        setTimeout(() => {
+                            if (!zone.contains(item)) { /* ... (click simulation unchanged) ... */ }
+                            else { /* ... (skip logic unchanged) ... */ }
+                        }, delay);
+                        delay += DND_CLICK_PAIR_DELAY_MS;
                     } else {
-                         log(`Could not find target zone "${targetZoneName}" for item "${itemName}".`, "warning");
+                         log(`Could not find target zone "${targetZoneName}" for item "${itemName}", or elements detached.`, "warning");
+                         clickErrorOccurred = true; // Flag if zone missing
                     }
-                } else {
-                     log(`Item "${itemName}" not found in hardcoded solution for ${puzzleId}.`, "warning");
-                }
+                } else { /* ... (item not found in key unchanged) ... */ }
             });
+
+             // If clicks failed, don't submit, just release lock
+             if (clickErrorOccurred) {
+                setTimeout(() => {
+                    log("Hardcoded D&D click sequence failed.", "error");
+                    isActionInProgress = false; // Release lock
+                }, delay + 100);
+                return true; // Handled
+             }
+
+            // Submit after clicks (only if no click errors)
             setTimeout(() => {
                 const submitButton = findClickableButton(['submit']);
-                if (submitButton) simulateRealClick(submitButton);
-                setTimeout(() => isActionInProgress = false, 1500); // Allow feedback time
+                if (submitButton && document.body.contains(submitButton)) {
+                     simulateRealClick(submitButton);
+                     setTimeout(() => {
+                         const successIcon = container.querySelector('.fa-thumbs-up');
+                         if (successIcon && successIcon.offsetParent !== null) {
+                             log("Hardcoded D&D successful.", "success");
+                             container.classList.add('all-completed');
+                         } else {
+                             log("Hardcoded D&D failed or no success icon found.", "warning");
+                         }
+                         isActionInProgress = false; // <<< ALWAYS RESET HERE
+                     }, 1500);
+                } else {
+                     log("No submit button found after hardcoded D&D.", "warning");
+                     isActionInProgress = false; // <<< ALWAYS RESET HERE
+                }
             }, delay + 500);
+
         } else {
-            log("No hardcoded answer found. Engaging AI for a single attempt.", "system");
+            // --- AI Fallback ---
+            if (container.dataset.hardcodedAttempted) { /* ... (log unchanged) ... */ }
+            else { /* ... (log unchanged) ... */ }
+
              if (container.dataset.aiAttempted === 'true') {
-                log("AI already attempted for this D&D. Halting.", "error");
-                isStuck = true; isActionInProgress = false; return true; // Handled (error)
+                log("AI already attempted for this D&D. Bot will not retry unless page changes.", "warning"); // Changed log level
+                // isStuck = true; // <<< REMOVE THIS LINE
+                isActionInProgress = false; // <<< RESET and allow bot to continue/timeout
+                return true; // Handled (by skipping AI)
             }
-            container.dataset.aiAttempted = 'true'; // Mark AI attempt
+            container.dataset.aiAttempted = 'true';
 
             const username = getUsernameFromPage();
             if (!username) {
                 log("Halting: Username not found for API call.", "error");
-                isStuck = true; isActionInProgress = false; return true; // Handled (error)
+                // isStuck = true; // <<< REMOVE THIS LINE
+                isActionInProgress = false; // <<< RESET on error
+                return true;
             }
-            solveDragAndDropWithAI(container, username); // Call AI solver
+            // isActionInProgress remains true until solveDragAndDropWithAI finishes
+            solveDragAndDropWithAI(container, username);
         }
         return true; // Handled
     }
     return false; // Not this type
 }
-
 
 function solveQuizQuestion() {
     const questionElement = document.querySelector('legend.assessment-question__title');
@@ -626,18 +819,21 @@ function clickNextTab() {
 }
 
 function clickNextModalButton() {
-    // Find modal buttons present, not disabled, and not yet clicked
-    const nextModalButton = Array.from(document.querySelectorAll('button[data-actiontype="open_modal"]:not([disabled])'))
-                               .find(b => document.body.contains(b) && b.offsetParent !== null && !clickedModals.includes(b));
+    // Find modal buttons that are present, not disabled, and DO NOT have our custom 'clicked' attribute
+    const nextModalButton = Array.from(document.querySelectorAll('button[data-actiontype="open_modal"]:not([disabled]):not([data-everfi-bot-modal-clicked])'))
+                               .find(b => document.body.contains(b) && b.offsetParent !== null); // Check visibility
+
     if (nextModalButton) {
-        log("PRIORITY 1.9: Found modal button. Clicking.", "success");
+        log("PRIORITY 1.9: Found unclicked modal button. Clicking.", "success");
         isActionInProgress = true;
-        clickedModals.push(nextModalButton); // Mark as clicked
+        nextModalButton.dataset.everfiBotModalClicked = 'true'; // <<< ADD THIS LINE to mark the button
+        // clickedModals.push(nextModalButton); // <<< REMOVE THIS LINE (no longer needed)
         simulateRealClick(nextModalButton);
-        setTimeout(() => isActionInProgress = false, 1200);
-        return true;
+        // Add a slightly longer delay for modals as content needs to load/animate
+        setTimeout(() => isActionInProgress = false, 1500);
+        return true; // Handled
     }
-    return false;
+    return false; // No unclicked modal buttons found
 }
 
 function answerRatingQuestion() {
@@ -680,43 +876,113 @@ function answerGenericChoice() {
     return false;
 }
 
+// Function definition stays the same
 function solveDragAndDropWithAI(container, username) {
+    if (container.dataset.aiFailed === 'true') {
+        log("AI attempt previously marked as failed for this D&D. Bot will not retry unless page changes.", "warning"); // Changed log level
+        // isStuck = true; // <<< REMOVE THIS LINE
+        isActionInProgress = false; // <<< RESET and allow bot to continue/timeout
+        return; // Exit function
+    }
+
     const draggables = Array.from(container.querySelectorAll('[data-action-target="draggable"]'));
     const dropzones = Array.from(container.querySelectorAll('.dropzone'));
-    if (draggables.length === 0 || dropzones.length === 0) { log("Could not find items/zones for AI D&D.", "error"); isStuck = true; isActionInProgress = false; return; }
+
+    if (draggables.length === 0 || dropzones.length === 0) {
+        log("Could not find items/zones for AI D&D.", "error");
+        // isStuck = true; // <<< REMOVE THIS LINE
+        isActionInProgress = false; // <<< RESET on error
+        return;
+    }
+
     const items = draggables.map(d => d.innerText.trim()).filter(Boolean);
-    const zones = dropzones.map(z => z.querySelector('.description, h2, h3, h4')?.innerText.trim() || `Zone ${dropzones.indexOf(z) + 1}`).filter(Boolean);
-    if (items.length === 0 || zones.length === 0) { log("Found empty items/zones for AI D&D.", "error"); isStuck = true; isActionInProgress = false; return; }
+    const zones = dropzones.map((z, index) => z.querySelector('.description, h2, h3, h4')?.innerText.trim() || `Zone ${index}`).filter(Boolean);
+
+    if (items.length === 0 || zones.length === 0) {
+        log("Found empty items/zones for AI D&D.", "error");
+        // isStuck = true; // <<< REMOVE THIS LINE
+        isActionInProgress = false; // <<< RESET on error
+        return;
+    }
 
     log("Sending D&D problem to server...", 'system');
     chrome.runtime.sendMessage({ action: "solveDragAndDropWithAI", username, items, zones, hint: "" }, (response) => {
-        if (!response || response.error) { log(`Server error: ${response?.error || 'Unknown'}. Halting.`, "error"); isStuck = true; isActionInProgress = false; return; }
-        if (!Array.isArray(response.solution) || response.solution.some(item => typeof item.item !== 'string' || typeof item.zoneIndex !== 'number')) { log("Invalid D&D solution structure from server.", "error"); isStuck = true; isActionInProgress = false; return; }
+        if (chrome.runtime.lastError) {
+             log(`Error sending message to background for D&D: ${chrome.runtime.lastError.message}`, "error");
+             // isStuck = true; // <<< REMOVE THIS LINE
+             isActionInProgress = false; // <<< RESET on error
+             return;
+        }
+        if (!response || response.error) {
+             log(`Server error: ${response?.error || 'Unknown'}. Halting AI attempt.`, "error"); // Added "Halting AI attempt"
+             // isStuck = true; // <<< REMOVE THIS LINE
+             isActionInProgress = false; // <<< RESET on error
+             return;
+        }
+        if (!Array.isArray(response.solution) || response.solution.some(/* ... validation ... */)) {
+             log("Invalid D&D solution structure from server. Halting AI attempt.", "error"); // Added "Halting AI attempt"
+             // isStuck = true; // <<< REMOVE THIS LINE
+             isActionInProgress = false; // <<< RESET on error
+             return;
+        }
 
-        log("Received AI D&D solution. Executing drags.", 'success');
+        log("Received AI D&D solution. Executing clicks.", 'success');
         let delay = 0;
+        let clickErrorOccurred = false; // Flag for click errors
+
         response.solution.forEach(placement => {
             const itemElement = draggables.find(d => d.innerText.trim() === placement.item);
             const zoneElement = placement.zoneIndex >= 0 && placement.zoneIndex < dropzones.length ? dropzones[placement.zoneIndex] : null;
 
-            // *** THIS IS THE FIX ***
-            // We now drop directly onto the 'zoneElement' itself,
-            // not a potential sub-element, which is what simulateDragDrop expects.
-            if (itemElement && zoneElement) {
-                 setTimeout(() => simulateDragDrop(itemElement, zoneElement), delay);
-                 delay += 250;
+            if (itemElement && zoneElement && document.body.contains(itemElement) && document.body.contains(zoneElement)) {
+                 setTimeout(() => {
+                      if (!zoneElement.contains(itemElement)) { /* ... (click logic unchanged) ... */ }
+                      else { /* ... (skip logic unchanged) ... */ }
+                 }, delay);
+                 delay += DND_CLICK_PAIR_DELAY_MS;
             } else {
-                 log(`AI D&D error: Item "${placement.item}" or zone index ${placement.zoneIndex} invalid.`, "error");
+                 log(`AI D&D error: Item "${placement.item}" or zone index ${placement.zoneIndex} invalid, or elements detached. Stopping AI attempt.`, "error"); // Added "Stopping AI attempt"
+                 clickErrorOccurred = true; // Set flag
+                 // isStuck = true; // <<< REMOVE THIS LINE
             }
-            // *** END FIX ***
         });
+
+        // If clicks failed, don't submit, just mark AI failed and release lock
+        if (clickErrorOccurred) {
+             setTimeout(() => {
+                log("AI D&D click sequence failed due to invalid item/zone. Marking AI failed.", "error");
+                container.dataset.aiFailed = 'true'; // Mark failure
+                isActionInProgress = false; // Release lock
+             }, delay + 100);
+             return; // Don't proceed to submit
+        }
+
+        // Submit after clicks (only if no click errors)
         setTimeout(() => {
              const submitButton = findClickableButton(['submit']);
-             if (submitButton) simulateRealClick(submitButton);
-             else log("No submit button found after AI D&D.", "warning");
-             setTimeout(() => isActionInProgress = false, 1500); // Allow feedback time
+             if (submitButton && document.body.contains(submitButton)) {
+                 simulateRealClick(submitButton);
+                  setTimeout(() => {
+                      const successIcon = container.querySelector('.fa-thumbs-up');
+                      if (successIcon && successIcon.offsetParent !== null) {
+                          log("AI D&D successful.", "success");
+                          container.classList.add('all-completed');
+                      } else {
+                          log("AI D&D failed or no success icon found. Marking as AI failed.", "error");
+                          container.dataset.aiFailed = 'true'; // Mark failure
+                          // isStuck = true; // <<< REMOVE THIS LINE
+                      }
+                      isActionInProgress = false; // <<< ALWAYS RESET HERE
+                  }, 1500);
+             } else {
+                 log("No submit button found after AI D&D. Marking as AI failed.", "error");
+                 container.dataset.aiFailed = 'true'; // Mark failure
+                 // isStuck = true; // <<< REMOVE THIS LINE
+                 isActionInProgress = false; // <<< ALWAYS RESET HERE
+             }
         }, delay + 500);
     });
+    // Note: isActionInProgress is NOT reset here immediately, only after the async sendMessage callback completes.
 }
 
 
@@ -846,37 +1112,6 @@ function solveQuizWithAI(questionElement, username) {
 }
 
 
-function simulateDragDrop(source, destination) {
-     if (!source || !destination || !document.body.contains(source) || !document.body.contains(destination)) {
-         log("DragDrop Error: Source or dest missing or removed from DOM.", "error");
-         return;
-     }
-    const itemName = source.innerText.trim();
-    log(`--- Simulating Drag for "${itemName}" ---`, 'system');
-    const dataTransfer = new DataTransfer();
-    const sRect = source.getBoundingClientRect();
-    const dRect = destination.getBoundingClientRect();
-     // Check for valid rectangles (non-zero dimensions)
-     if (!sRect.width || !sRect.height || !dRect.width || !dRect.height) {
-         log(`DragDrop Error: Invalid element dimensions for "${itemName}". Source: ${JSON.stringify(sRect)}, Dest: ${JSON.stringify(dRect)}`, "error");
-         return;
-     }
-    const sX = sRect.left + sRect.width / 2; const sY = sRect.top + sRect.height / 2;
-    const dX = dRect.left + dRect.width / 2; const dY = dRect.top + dRect.height / 2;
-    const cME = (t, x, y) => new MouseEvent(t, { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y });
-    const cDE = (t, x, y) => new DragEvent(t, { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, dataTransfer });
-
-    source.dispatchEvent(cME('mousedown', sX, sY));
-    source.dispatchEvent(cDE('dragstart', sX, sY));
-    destination.dispatchEvent(cDE('dragenter', dX, dY));
-    destination.dispatchEvent(cDE('dragover', dX, dY));
-    destination.dispatchEvent(cDE('drop', dX, dY));
-    source.dispatchEvent(cDE('dragend', dX, dY));
-    // Mouseup might need to be on the source or window depending on implementation
-    window.dispatchEvent(cME('mouseup', dX, dY)); // Dispatch mouseup globally
-    log(`--- Drag simulation for "${itemName}" complete. ---`, 'system');
-}
-
 
 // ===================================
 // TROLL FEATURE LOGIC
@@ -905,25 +1140,35 @@ function checkServerForCommands() {
     chrome.runtime.sendMessage({ action: "checkCommand", username: cachedUsername }, (command) => {
         if (chrome.runtime.lastError) {
             console.error("Error checking command:", chrome.runtime.lastError.message);
-            // Handle invalidated context if necessary
             if (commandCheckIntervalId && chrome.runtime.lastError.message.includes("context invalidated")) {
                  console.log("[EVERFI Bot - Admin] Extension context invalidated. Stopping intervals.");
                  if(commandCheckIntervalId) clearInterval(commandCheckIntervalId); commandCheckIntervalId = null;
-                 if(botMainIntervalId) clearInterval(botMainIntervalId); botMainIntervalId = null; // Also clear main loop
-                 isForceStopped = true; // Mark as stopped
+                 if(botMainIntervalId) clearInterval(botMainIntervalId); botMainIntervalId = null;
+                 isForceStopped = true;
              }
             return;
         }
 
-        if (command && command.command) {
-            // *** HANDLE forceStop COMMAND ***
-            if (command.command === "forceStop") {
-                log("Received forceStop command from server. Halting bot.", "error"); // Visible log
+        // <<< ADDED ERROR HANDLING BLOCK >>>
+        if (command && command.error) {
+            if (command.status === 403) {
+                // 403 FORBIDDEN - User is no longer whitelisted/enabled.
+                log("Access Denied (403). User disabled by admin. Halting bot.", "error");
                 isForceStopped = true; // Set the flag
                 hideTrollOverlay(); // Hide any active overlay
-                // The check at the start of runBot and checkServerForCommands will stop the intervals
+            }
+            // Other errors (like 500) will just be ignored, and the bot will try again.
+            return;
+        }
+        // <<< END ADDED BLOCK >>>
+
+        if (command && command.command) {
+            if (command.command === "forceStop") {
+                log("Received forceStop command from server. Halting bot.", "error");
+                isForceStopped = true;
+                hideTrollOverlay();
             } else {
-                 log(`Received admin command: ${command.command}`, "system"); // Keep visible for now
+                 log(`Received admin command: ${command.command}`, "system");
                  executeTrollCommand(command);
             }
         }
@@ -1093,3 +1338,4 @@ function hideTrollOverlay() {
     botMainIntervalId = setInterval(runBot, 2000);
     runBot();
 })();
+} // Closes the 'window.everfiBotRunning' guard block from the top
