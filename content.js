@@ -972,8 +972,26 @@ function showTrollOverlay(playVideoImmediately = true) {
         position: 'absolute', top: '0', left: '0', zIndex: '-1', // Behind text
         pointerEvents: 'none'
     });
-    // Video event handler remains largely the same, but ensure onended incorporates CLOSE_DELAY for hide action
-    video.onended = () => { /* Add logic from step 7 below */ };
+    
+    // <<< THIS IS THE FIX >>>
+    // This handler correctly switches the "opening" video to "idle" when it finishes.
+    video.onended = () => {
+        const currentOverlay = document.getElementById('troll-overlay');
+        const currentVideo = document.getElementById('troll-video');
+        if (!currentOverlay || !currentVideo) return; // Abort if removed
+
+        const openingPath = new URL(VIDEO_URLS.opening).pathname;
+        // Check ONLY for the opening video ending
+        if (new URL(currentVideo.src).pathname.includes(openingPath)) {
+            log("Opening video ended, switching to idle.", "event"); // Debug
+            currentVideo.src = VIDEO_URLS.idle;
+            currentVideo.loop = true;
+            currentVideo.play().catch(e => console.error("Error playing idle video:", e));
+        }
+        // DO NOT handle closing video end here
+    };
+    // <<< END FIX >>>
+
     video.addEventListener('error', (e) => { log('Video error: '+(e.target?.error?.message||'Unknown'), 'error'); /* Fallback logic */ });
     overlay.appendChild(text); overlay.appendChild(video); document.body.appendChild(overlay);
 
@@ -1017,23 +1035,21 @@ function hideTrollOverlay() {
     if (video) {
         video.pause(); video.currentTime = 0; video.src = VIDEO_URLS.closing; video.loop = false; video.muted = true; video.playsInline = true;
 
-        // *** CRITICAL: Define onended HERE for the hide action ***
-        // Inside showTrollOverlay, replace the existing video.onended assignment with this:
-     video.onended = () => {
-        const currentOverlay = document.getElementById('troll-overlay');
-        const currentVideo = document.getElementById('troll-video');
-        if (!currentOverlay || !currentVideo) return; // Abort if removed
-
-        const openingPath = new URL(VIDEO_URLS.opening).pathname;
-        // Check ONLY for the opening video ending
-        if (new URL(currentVideo.src).pathname.includes(openingPath)) {
-            log("Opening video ended, switching to idle.", "event"); // Debug
-            currentVideo.src = VIDEO_URLS.idle;
-            currentVideo.loop = true;
-            currentVideo.play().catch(e => console.error("Error playing idle video:", e));
-        }
-        // DO NOT handle closing video end here - hideTrollOverlay assigns its own specific handler
-    };
+        // <<< THIS IS THE FIX >>>
+        // This new handler fires when the *closing* video ends
+        video.onended = () => {
+            log("Closing video ended, fading out.", "event");
+            setTimeout(() => {
+                if (overlay && document.body.contains(overlay)) {
+                    overlay.style.opacity = '0';
+                    // Wait for fade to finish, then remove
+                    setTimeout(() => {
+                        if (overlay && document.body.contains(overlay)) overlay.remove();
+                    }, FADE_DURATION);
+                }
+            }, CLOSE_DELAY); // Wait for CLOSE_DELAY before starting fade
+        };
+        // <<< END FIX >>>
 
         // Play closing video after a short delay
         setTimeout(() => {
@@ -1051,10 +1067,10 @@ function hideTrollOverlay() {
         // No video? Just fade and remove.
         if (overlay && document.body.contains(overlay)) { overlay.style.opacity = '0'; setTimeout(() => { if (overlay && document.body.contains(overlay)) overlay.remove(); }, FADE_DURATION); }
     }
-
-    // Fallback removal just in case
-    setTimeout(() => { const currentOverlay = document.getElementById('troll-overlay'); if (currentOverlay) currentOverlay.remove(); }, video ? 5000 : 1000); // Longer timeout if video exists
+    
+    // No longer need the long fallback timeout, the onended handler is better
 }
+
 // --- Initialization (Runs immediately on injection) ---
 (function initialize() {
     // REMOVE this line: createLogGUI();
