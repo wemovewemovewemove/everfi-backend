@@ -187,25 +187,58 @@ app.post('/api/solve-quiz', async (req, res) => {
     try {
         await checkUserStatusForAI(username); // Throws error if not allowed
 
-        let promptStart = tableData ? `Use table data...\n\nTABLE DATA:\n${tableData}\n\n---\n\n` : "";
-        let promptMain = `Select BEST answer...\n\nQuestion: ${question}\n\nOptions:\n${options.map(opt => `- ${opt}`).join('\n')}\n\nSelected Option Text:`;
-        let promptEnd = (incorrectOptions && incorrectOptions.length > 0) ? `\n\nIMPORTANT: ... Do NOT choose: ${incorrectOptions.join(', ')}` : "";
-        const fullPrompt = promptStart + promptMain + promptEnd;
+        // --- NEW STRICT PROMPT ---
+        let systemPrompt = `You are an automated quiz-solving assistant. You will be given a question, a list of multiple-choice options, and sometimes a data table for context. Your task is to identify the single best answer. Respond with ONLY the full, exact text of the correct option. Do NOT add any conversational text, explanations, or punctuation.`;
+
+        let userPrompt = "";
+        if (tableData) {
+            userPrompt += `Use the following table data for context:\n\nTABLE DATA:\n${tableData}\n\n---\n\n`;
+        }
+        userPrompt += `Question: ${question}\n\nOptions:\n${options.map(opt => `- ${opt}`).join('\n')}`;
+        if (incorrectOptions && incorrectOptions.length > 0) {
+            userPrompt += `\n\nIMPORTANT: Based on previous attempts, do NOT choose any of the following: ${incorrectOptions.join(', ')}`;
+        }
+        // --- END NEW PROMPT ---
 
         const response = await fetch("https://api.openai.com/v1/chat/completions", {
-            method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${OPENAI_API_KEY}`},
-            body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: fullPrompt }] })
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${OPENAI_API_KEY}`
+            },
+            body: JSON.stringify({
+                model: "gpt-3.5-turbo", // <<< MODEL CHANGED HERE
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    { role: "user", content: userPrompt }
+                ],
+                temperature: 0.1, // Lower temperature for more deterministic answers
+                max_tokens: 150 // Generous limit for option text
+            })
         });
-        if (!response.ok) throw new Error(`OpenAI API error: ${response.status} ${response.statusText}`);
+
+        if (!response.ok) {
+            const errorBody = await response.text(); // Get error details if possible
+            throw new Error(`OpenAI API error: ${response.status} ${response.statusText} - ${errorBody}`);
+        }
+
         const data = await response.json();
-        if (!data.choices || !data.choices[0] || !data.choices[0].message) throw new Error("Invalid OpenAI response structure");
-        const answer = data.choices[0].message.content.trim().replace(/^"|"$/g, '');
+
+        if (!data.choices || !data.choices[0] || !data.choices[0].message || !data.choices[0].message.content) {
+             throw new Error("Invalid OpenAI response structure");
+        }
+
+        // Clean the answer: remove potential quotes, extra whitespace
+        const answer = data.choices[0].message.content.trim().replace(/^["']|["']$/g, '');
+
         console.log(`Sending quiz answer for ${username}: "${answer.substring(0, 50)}..."`);
         res.status(200).json({ answer: answer });
 
     } catch (error) {
         console.error(`Error in /api/solve-quiz for ${username}:`, error.message);
-        res.status(500).json({ error: error.message || "Failed to solve quiz" });
+        // Avoid sending potentially sensitive error details like API keys back to the client
+        const clientErrorMessage = error.message.includes("OpenAI API error") ? "Failed to get response from AI." : "Failed to solve quiz.";
+        res.status(500).json({ error: clientErrorMessage });
     }
 });
 
@@ -215,28 +248,86 @@ app.post('/api/solve-dnd', async (req, res) => {
     try {
         await checkUserStatusForAI(username); // Throws error if not allowed
 
-        let prompt = `Sort items into categories...\n\nITEMS:\n- ${items.join('\n- ')}\n\nZONES:\n${zones.map((zone, index) => `- Zone ${index}: ${zone}`).join('\n')}\n`;
-        if (hint && hint.trim() && !hint.toLowerCase().includes("incorrect")) { prompt += `\nCRUCIAL HINT...\n"${hint}"\n`; }
-        else { prompt += `\nDetermine correct zone...\n`; }
-        prompt += `\nYour response MUST be ONLY a valid JSON array...\nExample:\n[\n  {"item": "Item A", "zoneIndex": 1}...\n]\n`;
+        // --- NEW STRICT PROMPT ---
+        const systemPrompt = `You are an automated puzzle-solving assistant. You will be given a JSON list of "items" and a JSON list of "zones". Your task is to match each item to its correct zone based on context and any provided hint. The zones are 0-indexed based on the order they appear in the input list. Respond with ONLY a valid JSON array of objects in the format:\n[\n  {"item": "Exact Item Text", "zoneIndex": Z}\n]\nDo not add any other text, markdown, code formatting, or explanation. Ensure every item from the input list is included exactly once in the output JSON.`;
+
+        let userPrompt = `ITEMS:\n${JSON.stringify(items)}\n\nZONES:\n${JSON.stringify(zones)}`;
+        if (hint && hint.trim() && !hint.toLowerCase().includes("incorrect")) {
+            // Only include hint if it seems helpful
+            userPrompt += `\n\nCRUCIAL HINT: "${hint}"`;
+        }
+        // --- END NEW PROMPT ---
 
         const response = await fetch("https://api.openai.com/v1/chat/completions", {
-            method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${OPENAI_API_KEY}`},
-            body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: prompt }] })
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${OPENAI_API_KEY}`
+            },
+            body: JSON.stringify({
+                model: "gpt-3.5-turbo", // <<< MODEL CHANGED HERE
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    { role: "user", content: userPrompt }
+                ],
+                response_format: { type: "json_object" }, // Ask for JSON output directly if model supports
+                temperature: 0.1,
+                max_tokens: 1000 // Allow more tokens for potentially complex JSON
+            })
         });
-        if (!response.ok) throw new Error(`OpenAI API error: ${response.status} ${response.statusText}`);
+
+        if (!response.ok) {
+            const errorBody = await response.text();
+            throw new Error(`OpenAI API error: ${response.status} ${response.statusText} - ${errorBody}`);
+        }
+
         const data = await response.json();
-        if (!data.choices || !data.choices[0] || !data.choices[0].message) throw new Error("Invalid OpenAI response structure");
+
+        if (!data.choices || !data.choices[0] || !data.choices[0].message || !data.choices[0].message.content) {
+            throw new Error("Invalid OpenAI response structure");
+        }
+
         const rawContent = data.choices[0].message.content;
-        const jsonMatch = rawContent.match(/\[\s*\{[\s\S]*?\}\s*]/);
-        if (!jsonMatch) throw new Error("No valid JSON array in AI response.");
-        const solution = JSON.parse(jsonMatch[0]);
-        console.log(`Sending D&D solution for ${username}.`);
+
+        // Try parsing directly first (if response_format worked)
+        let solution = null;
+        try {
+            // Attempt to parse the entire content as JSON
+            const parsedJson = JSON.parse(rawContent);
+            // Check if it's the expected array format
+            if (Array.isArray(parsedJson) && parsedJson.every(entry => typeof entry === 'object' && 'item' in entry && 'zoneIndex' in entry)) {
+                solution = parsedJson;
+            } else if (typeof parsedJson === 'object' && Array.isArray(parsedJson.solution)) {
+                // Sometimes the model might wrap it like { "solution": [...] }
+                 solution = parsedJson.solution;
+             }
+        } catch (e) {
+            // Parsing failed, try regex fallback for markdown code blocks
+            console.log("Direct JSON parsing failed, attempting regex fallback.");
+            const jsonMatch = rawContent.match(/```json\s*([\s\S]*?)\s*```|(\[\s*\{[\s\S]*?\}\s*])/);
+            if (jsonMatch) {
+                try {
+                    // Use the first non-null capture group
+                    solution = JSON.parse(jsonMatch[1] || jsonMatch[2]);
+                } catch (parseError) {
+                    console.error("Failed to parse extracted JSON:", parseError);
+                    throw new Error("AI response contained malformed JSON.");
+                }
+            }
+        }
+
+        if (!solution || !Array.isArray(solution)) {
+             console.error("Raw AI response for D&D:", rawContent); // Log the raw response for debugging
+            throw new Error("Could not extract a valid JSON array solution from AI response.");
+        }
+
+        console.log(`Sending D&D solution for ${username}. Items matched: ${solution.length}`);
         res.status(200).json({ solution: solution });
 
     } catch (error) {
         console.error(`Error in /api/solve-dnd for ${username}:`, error.message);
-        res.status(500).json({ error: error.message || "Failed to solve D&D" });
+        const clientErrorMessage = error.message.includes("OpenAI API error") ? "Failed to get response from AI." : "Failed to solve D&D.";
+        res.status(500).json({ error: clientErrorMessage });
     }
 });
 

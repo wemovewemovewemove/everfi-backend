@@ -259,12 +259,16 @@ function simulateRealClick(element) {
 }
 
 function findClickableButton(keywords) {
-    const elements = document.querySelectorAll('a, button, input[type="submit"]');
+    // Expanded selector to include 'role=button' for modern UI elements
+    const elements = document.querySelectorAll('a, button, input[type="submit"], [role="button"]');
     for (const el of elements) {
         // Check visibility and if it's within the main document body
         if (document.body.contains(el) && !el.disabled && el.offsetParent !== null) {
-            const text = (el.innerText || el.value || el.getAttribute('aria-label') || '').trim().toLowerCase();
-            if (text && keywords.some(keyword => text.startsWith(keyword))) {
+            // Use textContent for a more reliable match, including nested elements
+            const text = (el.textContent || el.value || el.getAttribute('aria-label') || '').trim().toLowerCase();
+            
+            // Use 'includes' instead of 'startsWith' to catch more variations
+            if (text && keywords.some(keyword => text.includes(keyword))) {
                  return el;
             }
         }
@@ -695,13 +699,16 @@ function solveDragAndDropWithAI(container, username) {
             const itemElement = draggables.find(d => d.innerText.trim() === placement.item);
             const zoneElement = placement.zoneIndex >= 0 && placement.zoneIndex < dropzones.length ? dropzones[placement.zoneIndex] : null;
 
+            // *** THIS IS THE FIX ***
+            // We now drop directly onto the 'zoneElement' itself,
+            // not a potential sub-element, which is what simulateDragDrop expects.
             if (itemElement && zoneElement) {
-                 const dropTarget = zoneElement.querySelector('[data-action-target="container"]') || zoneElement;
-                 if (dropTarget) {
-                     setTimeout(() => simulateDragDrop(itemElement, dropTarget), delay);
-                     delay += 250;
-                 } else log(`AI D&D error: Could not find drop target in zone ${placement.zoneIndex}.`, "error");
-            } else log(`AI D&D error: Item "${placement.item}" or zone index ${placement.zoneIndex} invalid.`, "error");
+                 setTimeout(() => simulateDragDrop(itemElement, zoneElement), delay);
+                 delay += 250;
+            } else {
+                 log(`AI D&D error: Item "${placement.item}" or zone index ${placement.zoneIndex} invalid.`, "error");
+            }
+            // *** END FIX ***
         });
         setTimeout(() => {
              const submitButton = findClickableButton(['submit']);
